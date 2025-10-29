@@ -17,12 +17,12 @@ CHANNEL="xfce4-keyboard-shortcuts"
 declare -A SHORTCUTS=(
   ["<Super>a"]="qvm-run --pass-io mgmtvm 'xfce4-terminal'"
   ["<Super>d"]="xfce4-terminal"
-  ["<Super>f"]="/home/admin/qubes-scripts/dom0/open-in-focused-qube.sh files"
+  ["<Super>f"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh files"
   ["<Super>k"]="xfce4-keyboard-settings"
   ["<Super>l"]="xflock4"
   ["<Super>m"]="qubes-qube-manager"
-  ["<Super>s"]="/home/admin/qubes-scripts/dom0/open-in-focused-qube.sh settings"
-  ["<Super>t"]="/home/admin/qubes-scripts/dom0/open-in-focused-qube.sh terminal"
+  ["<Super>s"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh settings"
+  ["<Super>t"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh terminal"
   ["<Super>w"]="qvm-run -q -a --service -- whonix-bookmarks qubes.StartApp+split-browser"
 )
 
