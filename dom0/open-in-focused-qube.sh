@@ -1,6 +1,7 @@
 #!/bin/bash
 # Unified launcher: open a terminal, settings, or file manager for the currently focused Qube
 # Usage:
+#   open-in-focused-qube.sh browser
 #   open-in-focused-qube.sh files
 #   open-in-focused-qube.sh settings
 #   open-in-focused-qube.sh terminal
@@ -9,6 +10,7 @@
 # - Detects the focused window's Qube name using xdotool + xprop.
 #
 # - If focus is in dom0 (no _QUBES_VMNAME), we run:
+#     - browser  -> opens a local web browser (firefox)
 #     - files    -> opens a local file manager (thunar)
 #     - settings -> opens Global Qubes Settings (qubes-global-config)
 #     - terminal -> opens a local dom0 terminal (xfce4-terminal)
@@ -21,13 +23,14 @@
 
 set -euo pipefail
 
-usage() { echo "Usage: $(basename "$0") {terminal|settings|files}" >&2; exit 2; }
+usage() { echo "Usage: $(basename "$0") {browser|terminal|settings|files}" >&2; exit 2; }
 
 # Accepts one argument (case-insensitive), with some aliases:
 [[ $# -eq 1 ]] || usage
 action="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
 
 case "$action" in
+  web|browser) action="browser" ;;
   term|terminal) action="terminal" ;;
   set|settings)  action="settings" ;;
   file|files|fm|filemgr|file-manager|filemanager) action="files" ;;
@@ -99,14 +102,39 @@ run_qube_files() {
   ' >/dev/null 2>&1 &
 }
 
+run_dom0_browser() {
+  # dom0 doesn't have a web browser
+  exit
+}
+
+run_qube_browser() {
+  local vm="$1"
+  setsid -f qvm-run -q "$vm" '
+    if command -v exo-open >/dev/null 2>&1; then
+      setsid -f exo-open --launch WebBrowser >/dev/null 2>&1 &
+      exit 0
+    elif command -v firefox-esr >/dev/null 2>&1; then
+      setsid -f firefox-esr >/dev/null 2>&1 &
+      exit 0
+    elif command -v firefox >/dev/null 2>&1; then
+      setsid -f firefox >/dev/null 2>&1 &
+      exit 0
+    else
+      exit 1
+    fi
+  ' >/dev/null 2>&1 &
+}
+
 if [[ -z "${QUBE}" ]]; then
   case "$action" in
+    browser)  run_dom0_browser ;;
     files)    run_dom0_files ;;
     terminal) run_dom0_terminal ;;
     settings) run_dom0_settings ;;
   esac
 else
   case "$action" in
+    browser)  run_qube_browser "$QUBE" ;;
     files)    run_qube_files "$QUBE" ;;
     terminal) run_qube_terminal "$QUBE" ;;
     settings) run_qube_settings "$QUBE" ;;
