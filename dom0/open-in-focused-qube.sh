@@ -64,7 +64,25 @@ run_dom0_terminal() {
 run_qube_terminal() {
   local vm="$1"
   # Prefer qubes-run-terminal within the VM, fallback to xfce4-terminal/xterm
-  qvm-run --pass-io "$vm" '/usr/bin/qubes-run-terminal || xfce4-terminal || xterm' & disown
+  setsid -f qvm-run -q "$vm" '
+    if command -v qubes-run-terminal >/dev/null 2>&1; then
+      setsid -f qubes-run-terminal >/dev/null 2>&1 &
+      exit 0
+    elif command -v exo-open >/dev/null 2>&1; then
+      setsid -f exo-open --launch TerminalEmulator >/dev/null 2>&1 &
+      exit 0
+    elif command -v xfce4-terminal >/dev/null 2>&1; then
+      setsid -f xfce4-terminal >/dev/null 2>&1 &
+      exit 0
+    elif command -v xterm >/dev/null 2>&1; then
+      setsid -f xterm >/dev/null 2>&1 &
+      exit 0
+    else
+      exit 1
+    fi
+  ' >/dev/null 2>&1 &
+
+  # qvm-run --pass-io "$vm" '/usr/bin/qubes-run-terminal || xfce4-terminal || xterm' & disown
 }
 
 
