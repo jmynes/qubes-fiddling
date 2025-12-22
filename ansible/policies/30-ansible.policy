@@ -1,0 +1,32 @@
+# Based on https://github.com/bcduggan/qubes-ansible/blob/main/README.md
+## Please check if any of this should change in Qubes OS 4.3, this was based on 4.2, before the official repo was made:
+### https://github.com/qubesos/qubes-ansible
+
+# ---------------------
+# Admin-level Policies
+# ---------------------
+admin.vm.Create.AppVM         *                   mgmtvm  dom0                    allow
+admin.vm.Create.StandaloneVM  *                   mgmtvm  dom0                    allow
+admin.vm.Create.TemplateVM    *                   mgmtvm  dom0                    allow
+admin.vm.Remove               *                   mgmtvm  @tag:created-by-mgmtvm  allow  target=dom0
+
+admin.vm.List                 *                   mgmtvm  dom0                    allow
+admin.vm.Start                *                   mgmtvm  dom0                    allow
+admin.vm.Status               *                   mgmtvm  dom0                    allow
+
+admin.vm.property.GetAll      *                   mgmtvm  dom0                    allow
+admin.vm.property.Get         +audiovm            mgmtvm  dom0                    allow
+admin.vm.property.Get         +default_dispvm     mgmtvm  dom0                    allow
+admin.vm.property.Get         +management_dispvm  mgmtvm  dom0                    allow
+admin.vm.property.Get         +is_preload         mgmtvm  dom0                    allow
+admin.vm.property.Get         +guivm              mgmtvm  dom0                    allow
+admin.vm.property.Get         +label              mgmtvm  dom0                    allow
+admin.vm.property.Get         +netvm              mgmtvm  dom0                    allow
+admin.vm.property.Get         +template           mgmtvm  dom0                    allow
+
+
+# ---------------------
+# Qubes-level Policies
+# ---------------------
+qubes.VMShell                 *                   mgmtvm  @tag:created-by-mgmtvm  allow
+qubes.WaitForSession          *                   mgmtvm  @tag:created-by-mgmtvm  allow
