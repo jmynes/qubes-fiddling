@@ -16,14 +16,18 @@ CHANNEL="xfce4-keyboard-shortcuts"
 
 declare -A SHORTCUTS=(
   ["<Super>a"]="qvm-run --pass-io mgmtvm 'xfce4-terminal'"
+  ["<Super>b"]="qubes-backup"
   ["<Super>d"]="xfce4-terminal"
   ["<Super>f"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh files"
   ["<Super>k"]="xfce4-keyboard-settings"
   ["<Super>l"]="xflock4"
   ["<Super>m"]="qubes-qube-manager"
+  ["<Super>r"]="qubes-backup-restore"
   ["<Super>s"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh settings"
   ["<Super>t"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh terminal"
-  ["<Super>w"]="qvm-run --pass-io personal firefox"
+  ["<Super>w"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh browser"
+ #["<Super>w"]="qvm-run --pass-io personal firefox"
+  ["<Super>f2"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh appfinder"
 )
 
 for KEY in "${!SHORTCUTS[@]}"; do
