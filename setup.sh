@@ -20,10 +20,13 @@ echo -e "\n[dom0 - setup.sh]: Setting window manager shortcuts"
 
 
 ################################################
-#      Run ansible.sh, setting up mgmtvm       #
+#     Set up sys-firewall-localnet, mgmtvm     #
 ################################################
+echo -e "\n[dom0 - setup.sh]: Now setting up sys-firewall-localnet..."
+./dom0/create-sys-firewall-localnet.sh
+
 echo -e "\n[dom0 - setup.sh]: Now setting up mgmtvm..."
-./ansible.sh
+./ansible/ansible.sh
 
 
 ################################################
