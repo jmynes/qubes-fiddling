@@ -28,6 +28,7 @@ declare -A SHORTCUTS=(
   ["<Super>w"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh browser"
  #["<Super>w"]="qvm-run --pass-io personal firefox"
   ["<Super>F2"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh appfinder"
+  ["<Super>Print"]="/home/user/qubes-fiddling/dom0/open-in-focused-qube.sh screenshot"
 )
 
 for KEY in "${!SHORTCUTS[@]}"; do
