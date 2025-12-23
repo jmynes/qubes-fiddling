@@ -28,9 +28,6 @@ echo -e "\n[dom0 - setup.sh]: Now setting up sys-firewall-localnet..."
 echo -e "\n[dom0 - setup.sh]: Now setting up mgmtvm..."
 ./ansible/ansible.sh
 
-echo -e "\n[dom0 - setup.sh]: Now setting up `pull` alias, for getting files from mgmtvm into dom0"
-./dom0/pull.sh
-
 
 ################################################
 #      Run windows.sh, setting up Win 10       #
