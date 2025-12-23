@@ -6,23 +6,26 @@
 #   open-in-focused-qube.sh files
 #   open-in-focused-qube.sh settings
 #   open-in-focused-qube.sh terminal
+#   open-in-focused-qube.sh xfce4-screenshooter
 #
 # Behavior:
 # - Detects the focused window's Qube name using xdotool + xprop.
 #
 # - If focus is in dom0 (no _QUBES_VMNAME), we run:
-#     - appfinder -> opens a local appfinder popup (xfce4-appfinder --collapsed)
-#     - browser   -> nothing happens! (dom0 does not have a web browser)
-#     - files     -> opens a local dom0 file manager (thunar)
-#     - settings  -> opens Global Qubes Settings (qubes-global-config)
-#     - terminal  -> opens a local dom0 terminal (xfce4-terminal)
+#     - appfinder   -> opens a dom0 appfinder popup (xfce4-appfinder --collapsed)
+#     - browser     -> nothing happens! (dom0 does not have a web browser)
+#     - files       -> opens a dom0 file manager (thunar)
+#     - screenshot  -> opens a dom0 xfce4-screenshooter popup
+#     - settings    -> opens Global Qubes Settings (qubes-global-config)
+#     - terminal    -> opens a dom0 terminal (xfce4-terminal)
 #
 # - If focus is in a Qube, runs:
-#     - appfinder -> opens the appfinder popup in a focused qube (xfce4-appfinder --collapsed)
-#     - browser   -> opens the default web browser for a qube (firefox as fallback)
-#     - files     -> opens the default file manager for a qube (thunar as fallback)
-#     - settings  -> opens the Qubes Settings dialog for a qube
-#     - terminal  -> opens the default terminal inside that qube (xfce4-terminal, and then xterm as fallbacks)
+#     - appfinder  -> opens the appfinder popup in a focused qube (xfce4-appfinder --collapsed)
+#     - browser    -> opens the default web browser for a qube (firefox as fallback)
+#     - files      -> opens the default file manager for a qube (thunar as fallback)
+#     - screenshot -> opens the xfce4-screenshooter popup for a qube
+#     - settings   -> opens the Qubes Settings dialog for a qube
+#     - terminal   -> opens the default terminal for a qube (xfce4-terminal or xterm as fallback)
 #
 
 set -euo pipefail
@@ -37,6 +40,7 @@ case "$action" in
   app|appfinder|finder|applauncher|launcher) action="appfinder" ;;
   web|browser) action="browser" ;;
   term|terminal) action="terminal" ;;
+  screenshot|screenshooter) action="screenshot" ;;
   set|settings)  action="settings" ;;
   file|files|fm|filemgr|file-manager|filemanager) action="files" ;;
   *) usage ;;
@@ -95,6 +99,17 @@ run_qube_appfinder() {
   # Open appfinder in target qube
   local vm="$1"
   qvm-run --pass-io "$vm" 'xfce4-appfinder --collapsed' & disown
+}
+
+run_dom0_screenshot() {
+  # This does the exact same thing as PrtSc / Print Screen does by default
+  xfce4-screenshooter
+}
+
+run_qube_screenshot() {
+  # Open xfce4-screenshooter in target qube
+  local vm="$1"
+  qvm-run --pass-io "$vm" 'xfce4-screenshooter' & disown
 }
 
 run_dom0_settings() {
@@ -166,6 +181,7 @@ if [[ -z "${QUBE}" ]]; then
     browser)  run_dom0_browser ;;
     files)    run_dom0_files ;;
     terminal) run_dom0_terminal ;;
+    screenshot) run_dom0_screenshot ;;
     settings) run_dom0_settings ;;
   esac
 else
@@ -174,6 +190,7 @@ else
     browser)  run_qube_browser "$QUBE" ;;
     files)    run_qube_files "$QUBE" ;;
     terminal) run_qube_terminal "$QUBE" ;;
+    screenshot) run_qube_screenshot "$QUBE" ;;
     settings) run_qube_settings "$QUBE" ;;
   esac
 fi
