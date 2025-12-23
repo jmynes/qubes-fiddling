@@ -13,4 +13,4 @@
 
 mgmtvm    @adminvm                  allow    target=dom0
 mgmtvm    @tag:created-by-mgmtvm    allow    target=dom0
-mgmtvm    mtgmtvm                   allow    target=dom0
+mgmtvm    mgmtvm                    allow    target=dom0
