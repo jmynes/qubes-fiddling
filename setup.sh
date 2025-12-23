@@ -22,12 +22,12 @@ echo -e "\n[dom0 - setup.sh]: Setting window manager shortcuts"
 ################################################
 #      Run ansible.sh, setting up mgmtvm       #
 ################################################
-echo -e "[dom0 - setup.sh]: Now setting up mgmtvm..."
+echo -e "\n[dom0 - setup.sh]: Now setting up mgmtvm..."
 ./ansible.sh
 
 
 ################################################
 #      Run windows.sh, setting up Win 10       #
 ################################################
-read -p "[dom0 - setup.sh]: Configured! This is the last step, We are about to run windows.sh (this sets up Windows 10), so ctrl + c now if you would prefer not to do this"
+read -p "\n[dom0 - setup.sh]: Configured! This is the last step, We are about to run windows.sh (this sets up Windows 10), so ctrl + c now if you would prefer not to do this"
 ./windows.sh
