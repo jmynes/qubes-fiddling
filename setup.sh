@@ -20,13 +20,16 @@ echo -e "\n[dom0 - setup.sh]: Setting window manager shortcuts"
 
 
 ################################################
-#     Set up sys-firewall-localnet, mgmtvm     #
+#  Set up sys-firewall-localnet, mgmtvm, pull  #
 ################################################
 echo -e "\n[dom0 - setup.sh]: Now setting up sys-firewall-localnet..."
 ./dom0/create-sys-firewall-localnet.sh
 
 echo -e "\n[dom0 - setup.sh]: Now setting up mgmtvm..."
 ./ansible/ansible.sh
+
+echo -e "\n[dom0 - setup.sh]: Now setting up `pull` alias, for getting files from mgmtvm into dom0"
+./dom0/pull.sh
 
 
 ################################################
