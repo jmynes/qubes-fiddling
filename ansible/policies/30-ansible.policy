@@ -29,6 +29,6 @@ admin.vm.property.Get         +template           mgmtvm  dom0                  
 # ---------------------
 # Qubes-level Policies
 # ---------------------
-qubes.TemplateSearch          *                   mgmtvm  sys-firewall            allow
+qubes.TemplateSearch          *                   mgmtvm  @tag:created-by-mgmtvm  allow
 qubes.VMShell                 *                   mgmtvm  @tag:created-by-mgmtvm  allow
 qubes.WaitForSession          *                   mgmtvm  @tag:created-by-mgmtvm  allow
