@@ -8,6 +8,7 @@
 admin.vm.Create.AppVM         *                   mgmtvm  dom0                    allow
 admin.vm.Create.StandaloneVM  *                   mgmtvm  dom0                    allow
 admin.vm.Create.TemplateVM    *                   mgmtvm  dom0                    allow
+admin.vm.feature.Get          +template-name      mgmtvm  dom0                    allow
 admin.vm.Remove               *                   mgmtvm  @tag:created-by-mgmtvm  allow  target=dom0
 
 admin.vm.List                 *                   mgmtvm  dom0                    allow
@@ -28,5 +29,6 @@ admin.vm.property.Get         +template           mgmtvm  dom0                  
 # ---------------------
 # Qubes-level Policies
 # ---------------------
+qubes.TemplateSearch          *                   mgmtvm  sys-firewall            allow
 qubes.VMShell                 *                   mgmtvm  @tag:created-by-mgmtvm  allow
 qubes.WaitForSession          *                   mgmtvm  @tag:created-by-mgmtvm  allow
