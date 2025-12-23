@@ -6,7 +6,11 @@
 #   open-in-focused-qube.sh files
 #   open-in-focused-qube.sh settings
 #   open-in-focused-qube.sh terminal
-#   open-in-focused-qube.sh xfce4-screenshooter
+#   open-in-focused-qube.sh screenshot
+#
+# Intended use case:
+#   map each of the above to a keybind of your choice, using xfce4-keyboard-settings
+#     e.g. Super + T to open a terminal in your focused Qube, Super + Print for a screenshot, etc
 #
 # Behavior:
 # - Detects the focused window's Qube name using xdotool + xprop.
