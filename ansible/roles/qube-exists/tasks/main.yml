@@ -114,7 +114,7 @@
 ###############################################
 #    Create AppVMs (or clone TemplateVMs)     #
 ###############################################
-- name: "[qube-exists - set_fact]: Resolve template_to_use (meta-var → actual template name)"
+- name: "[qube-exists - set_fact]: Resolve template_to_use (meta-var --> actual template name)"
   ansible.builtin.set_fact:
     resolved_template_to_use: >-
       {{
