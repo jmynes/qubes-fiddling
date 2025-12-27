@@ -1,0 +1,9 @@
+##################################################
+###   create the VM if it does not exist yet   ###
+##################################################
+- hosts: templatevms,appvms
+  connection: local
+  roles:
+    - { role: qube-exists }
+  gather_facts: no
+

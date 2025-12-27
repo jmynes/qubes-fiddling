@@ -1,0 +1,173 @@
+###############################################
+#          Check inventory_hostname           #
+###############################################
+- name: "[debug]: Check that the qube's klass is defined"
+  ansible.builtin.debug:
+    msg: |-
+      ERROR: 'klass' is undefined! You must define 'klass' as one of:
+      'AppVM', 'TemplateVM', 'DispVM', 'StandaloneVM', or 'AdminVM'
+  when: klass is undefined
+  failed_when: klass is undefined
+  changed_when: false
+
+- name: "[shell - qvm-ls]: Does the qube already exist?"
+  ansible.builtin.shell:
+    cmd: "qvm-ls --fields=name | grep '^{{ inventory_hostname }}$'"
+  register: system_already_exist
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+
+- name: "[shell - qvm-tags]: Is the qube tagged in dom0 as 'created-by-mgmtvm'?"
+  ansible.builtin.shell:
+    cmd: "qvm-tags {{ inventory_hostname }} | grep created-by-mgmtvm"
+  register: system_checked_tag
+  when: system_already_exist.rc == 0
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+
+- name: "[fail - when]: Fail if the qube is not tagged in dom0 as 'created-by-mgmtvm'"
+  ansible.builtin.fail:
+    msg: >-
+      Qube '{{ inventory_hostname }}' already exists but does NOT have the
+      'created-by-mgmtvm' tag. An admin in dom0 must run:
+        qvm-tags {{ inventory_hostname }} add created-by-mgmtvm
+  when: system_already_exist.rc == 0 and (system_checked_tag.rc is defined and system_checked_tag.rc != 0)
+
+
+###############################################
+#            Check template_to_use            #
+###############################################
+- name: "[shell - qvm-ls]: Does the TemplateVM already exist?"
+  ansible.builtin.shell:
+    cmd: "qvm-ls --fields=name | grep '^{{ template_to_use }}$'"
+  register: template_to_use_already_exist
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+
+- name: "[shell - qvm-tags]: Is this TemplateVM tagged in dom0 as 'created-by-mgmtvm'?"
+  ansible.builtin.shell:
+    cmd: "qvm-tags {{ template_to_use }} | grep created-by-mgmtvm"
+  register: template_to_use_checked_tag
+  when: template_to_use_already_exist.rc == 0
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+
+- name: "[fail - when]: Fail if TemplateVM is not tagged in dom0 as 'created-by-mgmtvm'"
+  ansible.builtin.fail:
+    msg: >-
+      Template '{{ template_to_use }}' already exists but does NOT have the
+      'created-by-mgmtvm' tag. An admin in dom0 must run:
+        qvm-tags {{ template_to_use }} add created-by-mgmtvm
+  when: template_to_use_already_exist.rc == 0 and (template_to_use_checked_tag.rc is defined and template_to_use_checked_tag.rc != 0)
+
+
+###############################################
+#      Check if TemplateVM is installed       #
+###############################################
+- name: "[shell - qvm-template --available]: Is the TemplateVM a downloadable template?"
+  #(downloadable templates that have already been downloaded should not count, but they do at this time :/"
+  ansible.builtin.shell:
+    cmd: "qvm-template --enablerepo=* list --available | grep '^{{ inventory_hostname }} ' | wc --lines"
+#  when: template_to_use is null!!!
+  changed_when: false
+  register: available_to_download
+  delegate_to: localhost
+
+- name: "[shell - qvm-template --installed]: Has the TemplateVM already been installed?"
+  ansible.builtin.shell:
+    cmd: "qvm-template --enablerepo=* list --installed | grep '^{{ inventory_hostname }} ' | wc --lines "
+#  when: template_to_use is null!!!
+#  become: true
+  changed_when: false
+  register: already_downloaded
+  delegate_to: localhost
+
+- name: "[debug]: available_to_download"
+  ansible.builtin.debug:
+    var: available_to_download
+
+- name: "[debug]: already_downloaded"
+  ansible.builtin.debug:
+    var: already_downloaded
+
+
+###############################################
+#        Actually install TemplateVMs         #
+###############################################
+# WARNING:  all repos are automatically enabled! (example: qubes-templates-itl-testing and qubes-templates-communicity-test are enabled)
+- name: "Download template {{ inventory_hostname }}"
+  ansible.builtin.shell:
+    cmd: "qvm-template --enablerepo=* --yes install {{ inventory_hostname }}"
+  when:
+    - available_to_download.stdout == "1"
+    - not already_downloaded.stdout == "1"
+    - system_already_exist.rc != 0
+  throttle: 1 # TODO: Check if this fixed issue where qvm-template cannot run until previous has finished?
+###  no_log: true
+  delegate_to: localhost
+
+
+###############################################
+#    Create AppVMs (or clone TemplateVMs)     #
+###############################################
+- name: "[qube-exists - set_fact]: Resolve template_to_use (meta-var → actual template name)"
+  ansible.builtin.set_fact:
+    resolved_template_to_use: >-
+      {{
+        lookup('vars', template_to_use)
+        if (template_to_use is defined) and (template_to_use in vars)
+        else (template_to_use | default(omit))
+      }}
+
+###############################################
+#    Create AppVMs (or clone TemplateVMs)     #
+###############################################
+# If variable not defined, qubes-ansible falls back to ../defaults/main.yml
+- name: "Create qube: {{ inventory_hostname }}"
+  qubesos:
+    guest: "{{ inventory_hostname }}"
+    vmtype: "{{ klass }}"
+    label: "{{ label }}"
+    state: present
+    template: >-
+      {{
+        omit
+          if klass == 'StandaloneVM' and (template_to_use is undefined)
+          else resolved_template_to_use
+      }}
+    tags: "{{ tags_to_use | default(omit) }}"
+    properties:
+      autostart: "{{ autostart | default(omit) }}"
+      netvm: "{{ netvm | default(omit) }}"
+      provides_network: "{{ provides_network | default(omit) }}"
+#      memory: "{{ memory | default(omit) }}"
+#      maxmem: "{{ maxmem | default(omit) }}"
+#      vcpus:  "{{ vcpus | default(omit) }}"
+#      volume:
+#        - name: "private"
+#          size: "{{ private_volume_size | default(omit) }}"
+      features:
+        servicevm: "{{ is_servicevm | default(omit) }}"
+  delegate_to: localhost
+
+    ##supposedly available properties:  ( https://github.com/QubesOS/qubes-ansible/blob/main/EXAMPLES.md )
+    # autostart: bool
+    # debug: bool
+    # include_in_backups: bool
+    # kernel: str
+    # label: str
+    # maxmem: int
+    # memory: int                     # <-- Had issues when last tested?
+    # provides_network: bool
+    # template: str
+    # template_for_dispvms: bool
+    # vcpus: int                      # <-- Had issues when last tested?
+    # virt_mode: str
+    # default_dispvm: str
+    # netvm: str
+    # features: dict[str, str]
+    # volume: dict[str, str]          # <-- Had issues when last tested?
