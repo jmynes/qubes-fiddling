@@ -1,0 +1,431 @@
+###############################################
+#      Obtain the Windows installation ISO    #
+###############################################
+# Download it into mgmtvm if missing (method = mirror | connector | manual).
+- name: "[include_tasks]: Fetch the Windows ISO if it isn't staged yet"
+  ansible.builtin.include_tasks: fetch-iso.yml
+
+- name: "[stat]: Verify the Windows ISO exists in mgmtvm at win_iso_src"
+  ansible.builtin.stat:
+    path: "{{ win_iso_src }}"
+  register: win_iso_stat
+
+- name: "[fail - when]: Fail if the Windows ISO is still missing"
+  ansible.builtin.fail:
+    msg: >-
+      Windows ISO not found at {{ win_iso_src }} and win_iso_download_method is
+      '{{ win_iso_download_method }}'. Either set win_iso_download_method=mirror
+      to auto-download the hash-pinned Win10 22H2 ISO, or (if a download failed -
+      e.g. Microsoft Sentinel blocked the 'connector' method from a VPN/datacenter
+      IP) download a Windows 10 x64 ISO manually, place it at win_iso_src, and set
+      win_iso_sha256 to its hash.
+  when: not win_iso_stat.stat.exists
+
+- name: "[stat - checksum]: Verify the Windows ISO sha256 matches win_iso_sha256"
+  ansible.builtin.stat:
+    path: "{{ win_iso_src }}"
+    checksum_algorithm: sha256
+  register: win_iso_hash
+  failed_when: win_iso_hash.stat.checksum != win_iso_sha256
+  when: win_iso_sha256 | length > 0
+
+###############################################
+#        Ensure windows-mgmt qube exists      #
+###############################################
+# Created from mgmtvm via the Admin API, so dom0 auto-tags it
+# created-by-mgmtvm and every later operation on it is permitted.
+# netvm stays "" forever: the repo, ISO, and QWT are all streamed in
+# from mgmtvm over qrexec instead of downloaded inside the qube.
+- name: "[qubesos.core.qube - present]: Ensure {{ resources_qube }} exists (airgapped resources qube)"
+  qubesos.core.qube:
+    name: "{{ resources_qube }}"
+    state: present
+    klass: AppVM
+    template: "{{ resources_qube_template }}"
+    properties:
+      label: black
+      netvm: ""
+      memory: 600
+      maxmem: 4000
+    volumes:
+      private:
+        size: "{{ (resources_private_size_gib | int) * 1073741824 }}"
+
+- name: "[qubesos.core.qube - running]: Start {{ resources_qube }}"
+  qubesos.core.qube:
+    name: "{{ resources_qube }}"
+    state: running
+
+- name: "[shell - qvm-run]: Wait for {{ resources_qube }} to answer qrexec"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ resources_qube }}", "echo ready"]
+  register: resources_ready
+  retries: 10
+  delay: 3
+  until: resources_ready.rc == 0
+  changed_when: false
+
+###############################################
+#   Media build dependencies in the template  #
+###############################################
+# create-media.sh / unpack-qwt-installer.sh need genisoimage + datefudge AND
+# udisksctl (udisks2) for loop-mounting the ISOs inside the qube.
+- name: "[shell - qvm-run]: Check {{ resources_qube }} has genisoimage, datefudge, udisksctl"
+  ansible.builtin.command:
+    argv:
+      - qvm-run
+      - -p
+      - "{{ resources_qube }}"
+      - "command -v genisoimage && command -v datefudge && command -v udisksctl"
+  register: media_tools_check
+  changed_when: false
+  failed_when: false
+
+- name: "[block - when]: Install media-build deps via the template"
+  when: media_tools_check.rc != 0
+  block:
+    - name: "[qubesos.core.qube - running]: Start template {{ resources_qube_template }}"
+      qubesos.core.qube:
+        name: "{{ resources_qube_template }}"
+        state: running
+
+    # qubes.VMShell into the template is only allowed if it is tagged
+    # created-by-mgmtvm (30-ansible.policy). Probe and fail with the exact
+    # dom0 fix rather than letting the dnf step die opaquely on a policy deny.
+    - name: "[shell - qvm-run]: Verify the template is reachable via qrexec (policy + boot)"
+      ansible.builtin.command:
+        argv: ["qvm-run", "-p", "{{ resources_qube_template }}", "echo ready"]
+      register: template_reachable
+      retries: 10
+      delay: 3
+      until: template_reachable.rc == 0
+      changed_when: false
+      failed_when: false
+
+    - name: "[fail - when]: Template not reachable - tag it in dom0"
+      ansible.builtin.fail:
+        msg: >-
+          Cannot run commands in template '{{ resources_qube_template }}' from mgmtvm.
+          The media-build dependencies (genisoimage, datefudge, udisks2) must be
+          installed there, which needs qubes.VMShell access. An admin must run in dom0:
+            qvm-tags {{ resources_qube_template }} add created-by-mgmtvm
+          (or pre-install genisoimage/datefudge/udisks2 in the template some other way).
+      when: template_reachable.rc != 0
+
+    - name: "[shell - qvm-run]: Install genisoimage, datefudge, udisks2 in {{ resources_qube_template }}"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ resources_qube_template }}"
+          - "rpm -q genisoimage datefudge udisks2 >/dev/null 2>&1 || sudo dnf -y install genisoimage datefudge udisks2"
+      register: media_tools_install
+      changed_when: "'Installing' in media_tools_install.stdout"
+
+    - name: "[qubesos.core.qube - shutdown]: Shut down template {{ resources_qube_template }} to commit changes"
+      qubesos.core.qube:
+        name: "{{ resources_qube_template }}"
+        state: shutdown
+
+    - name: "[qubesos.core.qube - shutdown]: Restart {{ resources_qube }} onto the updated template root"
+      qubesos.core.qube:
+        name: "{{ resources_qube }}"
+        state: shutdown
+
+    - name: "[qubesos.core.qube - running]: Start {{ resources_qube }} again"
+      qubesos.core.qube:
+        name: "{{ resources_qube }}"
+        state: running
+
+    - name: "[shell - qvm-run]: Wait for {{ resources_qube }} to answer qrexec again"
+      ansible.builtin.command:
+        argv: ["qvm-run", "-p", "{{ resources_qube }}", "echo ready"]
+      register: resources_ready_again
+      retries: 10
+      delay: 3
+      until: resources_ready_again.rc == 0
+      changed_when: false
+
+    - name: "[shell - qvm-run]: Verify genisoimage, datefudge, udisksctl are now available"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ resources_qube }}"
+          - "command -v genisoimage && command -v datefudge && command -v udisksctl"
+      changed_when: false
+
+###############################################
+#   Stage the qvm-create-windows-qube repo    #
+###############################################
+- name: "[shell - qvm-run]: Check the repo is already staged in {{ resources_qube }}"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ resources_qube }}", "test -x '{{ resources_dir }}/windows/create-media.sh'"]
+  register: repo_staged
+  changed_when: false
+  failed_when: false
+
+- name: "[shell - tar | qvm-run]: Stream the local checkout into {{ resources_qube }} (no networking needed)"
+  ansible.builtin.shell:
+    # pipefail so a truncated tar fails the task instead of staging a corrupt repo.
+    cmd: >-
+      set -o pipefail;
+      tar -C '{{ resources_src_checkout }}' --exclude=.git -cf - .
+      | qvm-run -p {{ resources_qube }}
+      "mkdir -p '{{ resources_dir }}' && tar -xf - -C '{{ resources_dir }}'"
+    executable: /bin/bash
+  changed_when: true
+  when: repo_staged.rc != 0
+
+###############################################
+#       Stage the Windows ISO and media       #
+###############################################
+- name: "[shell - qvm-run]: Check the ISO is already staged in {{ resources_qube }}"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ resources_qube }}", "test -f '{{ resources_dir }}/windows/isos/{{ win_iso_filename }}'"]
+  register: iso_staged
+  changed_when: false
+  failed_when: false
+
+- name: "[shell - qvm-run]: Stream the Windows ISO into {{ resources_qube }} (takes a few minutes)"
+  ansible.builtin.shell:
+    cmd: >-
+      qvm-run -p {{ resources_qube }}
+      "mkdir -p '{{ resources_dir }}/windows/isos' && cat > '{{ resources_dir }}/windows/isos/{{ win_iso_filename }}'"
+      < '{{ win_iso_src }}'
+  changed_when: true
+  when: iso_staged.rc != 0
+
+# Verify the staged ISO hash on EVERY run (not just after streaming), so a
+# cached-but-corrupt/swapped copy in the qube is caught before it is built into
+# installation media. Skipped only when win_iso_sha256 is empty.
+- name: "[shell - qvm-run sha256sum]: Verify the staged ISO hash inside {{ resources_qube }}"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ resources_qube }}", "sha256sum '{{ resources_dir }}/windows/isos/{{ win_iso_filename }}'"]
+  register: iso_staged_hash
+  changed_when: false
+  failed_when: iso_staged_hash.stdout.split() | first != win_iso_sha256
+  when: win_iso_sha256 | length > 0
+
+###############################################
+#  Detect already-prepared installation media #
+###############################################
+# A staged ISO may already BE create-media output (Autounattend.xml + boot.bin
+# baked into the root). Re-injecting then collides ("...have the same Joliet
+# name") and create-media.sh fails. Detect that case and use the ISO directly.
+- name: "[shell - qvm-run isoinfo]: Is the staged ISO already prepared media (has Autounattend.xml)?"
+  ansible.builtin.command:
+    argv:
+      - qvm-run
+      - -p
+      - "{{ resources_qube }}"
+      - "isoinfo -i '{{ resources_dir }}/windows/isos/{{ win_iso_filename }}' -f | grep -qi 'AUTOUNAT.XML'"
+  register: iso_preinjected
+  changed_when: false
+  failed_when: false
+
+# ---- Path A: ISO is already prepared media -> use it directly ----
+- name: "[block - when]: Use the pre-prepared ISO directly (skip answer-file injection)"
+  when: iso_preinjected.rc == 0
+  block:
+    - name: "[shell - qvm-run isoinfo]: Verify the baked-in answer file wires the QWT hook (D:\\run.bat)"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ resources_qube }}"
+          - "isoinfo -i '{{ resources_dir }}/windows/isos/{{ win_iso_filename }}' -x '/AUTOUNAT.XML;1' | grep -qi 'run.bat'"
+      register: baked_hook
+      changed_when: false
+      failed_when: false
+
+    - name: "[fail - when]: Baked-in answer file lacks the QWT install hook"
+      ansible.builtin.fail:
+        msg: >-
+          {{ win_iso_filename }} is already prepared media but its embedded
+          Autounattend.xml does not run D:\run.bat at first logon, so the QWT
+          install pass (boot pass 3) would not trigger. Supply a clean Windows
+          ISO (so this role injects answer-files/{{ win_answer_file }}) or a
+          prepared ISO built with a qvm-create-windows-qube answer file.
+      when: baked_hook.rc != 0
+
+    - name: "[debug]: Using pre-prepared media"
+      ansible.builtin.debug:
+        msg: >-
+          {{ win_iso_filename }} already contains Autounattend.xml + boot.bin
+          (prepared media, QWT hook present); using it directly and skipping
+          create-media.sh.
+
+    - name: "[shell - qvm-run]: Link the prepared ISO into windows/out (same FS, instant, idempotent)"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ resources_qube }}"
+          # Single line on purpose: a folded scalar would keep the newline before
+          # '||' (extra-indented continuation) and break the shell parse.
+          - "cd '{{ resources_dir }}/windows' && mkdir -p out && if [ ! 'out/{{ win_iso_filename }}' -ef 'isos/{{ win_iso_filename }}' ]; then ln -f 'isos/{{ win_iso_filename }}' 'out/{{ win_iso_filename }}'; fi"
+      changed_when: true
+
+# ---- Path B: clean ISO -> inject the answer file with create-media.sh ----
+# The upstream script caches windows/out/<iso> and never rebuilds it, even if
+# the answer file changed. Guard the cache with a sha256 marker instead.
+- name: "[shell - qvm-run sha256sum]: Hash the answer file in {{ resources_qube }}"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ resources_qube }}", "sha256sum '{{ resources_dir }}/windows/answer-files/{{ win_answer_file }}'"]
+  register: answer_file_hash
+  changed_when: false
+  when: iso_preinjected.rc != 0
+
+- name: "[shell - qvm-run]: Read the answer-file marker of the cached installation media"
+  ansible.builtin.command:
+    argv:
+      - qvm-run
+      - -p
+      - "{{ resources_qube }}"
+      - >-
+        test -f '{{ resources_dir }}/windows/out/{{ win_iso_filename }}'
+        && cat '{{ resources_dir }}/windows/out/.{{ win_iso_filename }}.answer.sha256' 2>/dev/null
+        || true
+  register: media_marker
+  changed_when: false
+  when: iso_preinjected.rc != 0
+
+- name: "[block - when]: Build the unattended installation media (answer file injected as Autounattend.xml)"
+  when:
+    - iso_preinjected.rc != 0
+    - media_marker.stdout.split() | first | default('') != answer_file_hash.stdout.split() | first
+  block:
+    - name: "[shell - qvm-run create-media.sh]: Rebuild windows/out/{{ win_iso_filename }}"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ resources_qube }}"
+          - >-
+            cd '{{ resources_dir }}/windows'
+            && rm -f 'out/{{ win_iso_filename }}'
+            && ./create-media.sh 'isos/{{ win_iso_filename }}' 'answer-files/{{ win_answer_file }}'
+      changed_when: true
+
+    - name: "[shell - qvm-run]: Write the answer-file marker next to the built media"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ resources_qube }}"
+          - >-
+            sha256sum '{{ resources_dir }}/windows/answer-files/{{ win_answer_file }}'
+            > '{{ resources_dir }}/windows/out/.{{ win_iso_filename }}.answer.sha256'
+      changed_when: true
+
+###############################################
+#        Qubes Windows Tools (QWT) ISO        #
+###############################################
+- name: "[shell - qvm-run]: Check QWT installer ISO is already staged in {{ resources_qube }}"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ resources_qube }}", "test -f '{{ resources_dir }}/tools/qwt-installer.iso'"]
+  register: qwt_staged
+  changed_when: false
+  failed_when: false
+
+- name: "[block - when]: Acquire QWT and stage it into {{ resources_qube }}"
+  when: qwt_staged.rc != 0
+  block:
+    - name: "[stat]: Check for a pre-downloaded QWT ISO at qwt_iso_src"
+      ansible.builtin.stat:
+        path: "{{ qwt_iso_src }}"
+      register: qwt_local_stat
+      when: qwt_iso_src | length > 0
+
+    - name: "[set_fact]: Resolve the QWT ISO path in mgmtvm"
+      ansible.builtin.set_fact:
+        qwt_iso_resolved: >-
+          {{ qwt_iso_src
+             if (qwt_iso_src | length > 0 and qwt_local_stat.stat.exists | default(false))
+             else '' }}
+
+    - name: "[block - when]: Download the official QWT dom0 rpm and extract the ISO"
+      when: qwt_iso_resolved | length == 0
+      block:
+        - name: "[file]: Ensure the mgmtvm cache directory exists"
+          ansible.builtin.file:
+            path: "{{ mgmtvm_cache_dir }}"
+            state: directory
+            mode: "0755"
+
+        - name: "[get_url]: Download {{ qwt_rpm_url | basename }} from the Qubes 4.3 repo"
+          ansible.builtin.get_url:
+            url: "{{ qwt_rpm_url }}"
+            dest: "{{ mgmtvm_cache_dir }}/{{ qwt_rpm_url | basename }}"
+            mode: "0644"
+
+        - name: "[shell - rpm --import]: Import the Qubes 4.3 release signing key into the rpm keyring"
+          ansible.builtin.command:
+            argv: ["sudo", "rpm", "--import", "{{ qubes_signing_key }}"]
+          changed_when: false
+
+        - name: "[shell - rpmkeys --checksig]: Verify the QWT rpm signature"
+          ansible.builtin.command:
+            argv: ["rpmkeys", "--checksig", "{{ mgmtvm_cache_dir }}/{{ qwt_rpm_url | basename }}"]
+          register: qwt_rpm_sig
+          changed_when: false
+          failed_when: "'signatures OK' not in qwt_rpm_sig.stdout"
+
+        - name: "[shell - rpm2cpio | cpio]: Extract the QWT ISO from the rpm"
+          ansible.builtin.shell:
+            # pipefail so a failed rpm2cpio does not silently leave a partial ISO.
+            cmd: >-
+              set -o pipefail;
+              cd '{{ mgmtvm_cache_dir }}'
+              && rpm2cpio '{{ qwt_rpm_url | basename }}'
+              | cpio -idmu --quiet './usr/lib/qubes/*'
+            executable: /bin/bash
+          changed_when: true
+
+        - name: "[shell - find]: Locate the extracted versioned QWT ISO"
+          ansible.builtin.command:
+            argv:
+              - find
+              - "{{ mgmtvm_cache_dir }}/usr/lib/qubes"
+              - -name
+              - "qubes-windows-tools*.iso"
+              - -type
+              - f
+              - -print
+              - -quit
+          register: qwt_extracted_iso
+          changed_when: false
+          failed_when: qwt_extracted_iso.stdout | length == 0
+
+        - name: "[set_fact]: Use the extracted QWT ISO"
+          ansible.builtin.set_fact:
+            qwt_iso_resolved: "{{ qwt_extracted_iso.stdout | trim }}"
+
+    - name: "[shell - qvm-run]: Stream the QWT ISO into {{ resources_qube }}"
+      ansible.builtin.shell:
+        cmd: >-
+          qvm-run -p {{ resources_qube }}
+          "mkdir -p '{{ resources_dir }}/tools' && cat > '{{ resources_dir }}/tools/qwt-installer.iso'"
+          < '{{ qwt_iso_resolved }}'
+      changed_when: true
+
+###############################################
+#         Build the auto-qwt boot ISO         #
+###############################################
+- name: "[shell - qvm-run]: Check auto-qwt.iso is already built in {{ resources_qube }}"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ resources_qube }}", "test -f '{{ resources_dir }}/tools/auto-qwt.iso'"]
+  register: auto_qwt_built
+  changed_when: false
+  failed_when: false
+
+- name: "[shell - qvm-run unpack/pack]: Build auto-qwt.iso (unattended QWT installer CD)"
+  ansible.builtin.command:
+    argv:
+      - qvm-run
+      - -p
+      - "{{ resources_qube }}"
+      - "cd '{{ resources_dir }}/tools' && ./unpack-qwt-installer.sh && ./pack-auto-qwt.sh"
+  changed_when: true
+  when: auto_qwt_built.rc != 0 or qwt_staged.rc != 0

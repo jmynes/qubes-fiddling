@@ -1,0 +1,81 @@
+---
+# ============================================================
+# Produce a secure, airgapped Windows 10 qube from mgmtvm.
+#
+# Run from mgmtvm:
+#   cd ~/qubes-fiddling/ansible
+#   ansible-playbook -i inventory.ini playbooks/windows10-airgapped.yml
+#
+# This is an Admin-API / qubes-ansible port of qvm-create-windows-qube
+# (windows.sh) that runs entirely in mgmtvm instead of dom0:
+#   1. windows-mgmt-setup : build the airgapped "windows-mgmt" resources qube,
+#      stream in the repo + Windows ISO + Qubes Windows Tools, and bake the
+#      unattended installation media (answer file injected as Autounattend.xml).
+#   2. windows-qube       : create the Windows HVM with hardened airgapped
+#      prefs (netvm none, memory balancing off), drive the unattended install
+#      boot passes via qvm-start --cdrom (loop-device form, mgmtvm-compatible),
+#      install QWT, run optional telemetry/optimize post scripts, then shut down.
+#
+# PREREQUISITES (one-time, in dom0 - mgmtvm cannot do these):
+#   - The Admin API policy must be installed and current:
+#       sudo cp ~/qubes-fiddling/ansible/policies/30-ansible.policy /etc/qubes/policy.d/
+#       sudo cp ~/qubes-fiddling/ansible/policies/include/admin-local-rwx /etc/qubes/policy.d/include/
+#       sudo cp ~/qubes-fiddling/ansible/policies/include/admin-global-ro /etc/qubes/policy.d/include/
+#     (the new windows-mgmt qube is auto-tagged created-by-mgmtvm at creation,
+#      so it needs no manual tagging.)
+#   - Stage a Windows 10 ISO in mgmtvm at win_iso_src and pin its sha256
+#     (mido.sh auto-download is broken upstream).
+#
+# AFTER the run, to harden (one-time, in dom0):
+#       sudo cp ~/qubes-fiddling/ansible/policies/40-windows-airgapped.policy /etc/qubes/policy.d/
+#   and, once you have finished producing Windows qubes, drop networking from
+#   the helper if you ever gave it any (it defaults to none here).
+# ============================================================
+- name: "<playbook>: Produce a secure airgapped Windows 10 qube via mgmtvm"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # ---- The Windows qube to produce ----
+    win_qube_name: "win10-airgapped"
+    win_qube_klass: "StandaloneVM"   # or TemplateVM to base AppVMs on it
+    win_qube_label: "blue"           # [windows:vars] convention
+    win_memory_mb: 12288         # initial RAM; maxmem 0 keeps balancing OFF
+    win_vcpus: 2
+    win_root_size_gib: 60
+    win_private_size_gib: 20
+
+    # ---- Display ----
+    # Max resolution the qube's GUI framebuffer can hold. Qubes sizes video RAM
+    # from this (gui-videoram-min); the QWT video driver then offers it inside
+    # Windows. 0x0 / empty leaves the Qubes default (screen-bound, ~1080p).
+    win_max_resolution: "2048x1152"
+
+    # ---- Installation source ----
+    # Default: auto-download the official Win10 22H2 x64 ISO from a stable mirror
+    # and verify it against win_iso_sha256 (set win_iso_download_method=manual to
+    # stage your own at win_iso_src instead; =connector for direct-from-Microsoft,
+    # which needs a residential/non-VPN IP).
+    win_iso_download_method: "mirror"
+    win_iso_filename: "Win10_22H2_English_x64v1.iso"
+    win_iso_url: "https://archive.org/download/win-10-22h2-v1-enus/Win10_22H2_English_x64v1.iso"
+    win_iso_sha256: "a6f470ca6d331eb353b815c043e327a347f594f37ff525f17764738fe812852e"
+    win_answer_file: "win10x64-pro.xml"
+
+    # ---- Resources qube (airgapped media server) ----
+    resources_qube: "windows-mgmt"
+    resources_qube_template: "fedora-42-xfce"
+    resources_src_checkout: "/home/user/Projects/qvm-create-windows-qube"
+
+    # ---- Post-install scripts (run inside Windows) ----
+    # optimize disables Defender/SmartScreen + opens the Windows host firewall;
+    # off by default for the hardened airgapped profile (see role defaults).
+    win_run_optimize: false
+    win_run_spyless: true
+    win_run_seamless: false
+
+  roles:
+    # Roles live in ../roles; reference by path so they resolve from playbooks/.
+    - role: "{{ playbook_dir }}/../roles/windows-mgmt-setup"
+    - role: "{{ playbook_dir }}/../roles/windows-qube"

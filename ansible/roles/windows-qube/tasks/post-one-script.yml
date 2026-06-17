@@ -1,0 +1,62 @@
+# One post script (post_script), streamed into Windows over qubes.VMShell and
+# run. Included in a loop from post-setup.yml (loop_var: post_script). Ansible
+# does not allow 'loop' on a block, so the per-script steps live here.
+- name: "[shell - qvm-run base64]: Pull {{ post_script }} from {{ resources_qube }} as base64"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ resources_qube }}", "base64 -w0 '{{ resources_dir }}/post/{{ post_script }}'"]
+  register: post_b64
+  changed_when: false
+
+- name: "[shell - qvm-run powershell]: Decode {{ post_script }} into C:\\post (byte-faithful)"
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      printf '%s' '{{ post_b64.stdout | trim }}'
+      | qvm-run --pass-io {{ win_qube_name }}
+      "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes('C:\\post\\{{ post_script }}',
+      [Convert]::FromBase64String([Console]::In.ReadToEnd()))\""
+    executable: /bin/bash
+  changed_when: true
+
+# base64 truncated on a 4-char boundary still decodes (to a short file) without
+# error, so verify the delivered file hash matches the source before running it.
+- name: "[shell - qvm-run sha256sum]: Source hash of {{ post_script }} in {{ resources_qube }}"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ resources_qube }}", "sha256sum '{{ resources_dir }}/post/{{ post_script }}'"]
+  register: post_src_hash
+  changed_when: false
+
+- name: "[shell - qvm-run Get-FileHash]: Delivered hash of C:\\post\\{{ post_script }}"
+  ansible.builtin.command:
+    argv:
+      - qvm-run
+      - -p
+      - "{{ win_qube_name }}"
+      - "powershell -NoProfile -Command \"(Get-FileHash -Algorithm SHA256 'C:\\post\\{{ post_script }}').Hash\""
+  register: post_dst_hash
+  changed_when: false
+
+# qvm-run into a Windows qube returns the cmd.exe banner + echoed command line
+# around the real output, so isolate the 64-hex sha256 with regex_search on
+# BOTH sides (sha256sum is lowercase, Get-FileHash uppercase -> lower both).
+- name: "[set_fact]: Did {{ post_script }} deliver intact?"
+  ansible.builtin.set_fact:
+    post_intact: >-
+      {{ (post_src_hash.stdout | regex_search('[a-fA-F0-9]{64}') | default('', true) | lower) | length == 64
+         and (post_src_hash.stdout | regex_search('[a-fA-F0-9]{64}') | default('', true) | lower)
+             == (post_dst_hash.stdout | regex_search('[a-fA-F0-9]{64}') | default('', true) | lower) }}
+
+- name: "[debug]: {{ post_script }} delivery integrity"
+  ansible.builtin.debug:
+    msg: "{{ post_script }} {{ 'delivered intact' if post_intact | bool else 'HASH MISMATCH - skipping run (best-effort, re-apply by hand)' }}"
+
+# Invoke by full path: 'cmd /c cd C:\post && x.bat' would let && bind to the
+# outer VMShell cmd and run x.bat from system32 ("not recognized"). These post
+# scripts use absolute reg/sc/dism commands, so cwd does not matter.
+- name: "[shell - qvm-run]: Run {{ post_script }} inside Windows (best-effort, only if intact)"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ win_qube_name }}", "cmd /c C:\\post\\{{ post_script }}"]
+  register: post_run
+  changed_when: true
+  failed_when: false
+  when: post_intact | bool

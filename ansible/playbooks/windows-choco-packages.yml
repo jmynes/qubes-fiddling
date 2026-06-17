@@ -1,0 +1,238 @@
+---
+# ============================================================
+# Install Chocolatey + packages on a NETWORKED Windows qube, from mgmtvm.
+#
+#   cd ~/qubes-fiddling/ansible
+#   ansible-playbook -i inventory.ini playbooks/windows-choco-packages.yml \
+#       -e win_qube_name=win10-gaming
+#
+# REQUIREMENTS:
+#   - The target qube must be tagged created-by-mgmtvm so mgmtvm can manage it.
+#     A clone made in dom0 is NOT auto-tagged; in dom0 run:
+#         qvm-tags <qube> add created-by-mgmtvm
+#   - The target qube must have a netvm. Chocolatey downloads packages from the
+#     internet, so this does NOT work on an airgapped qube (netvm "") - that is
+#     by design, and why the airgapped windows10-airgapped.yml installs nothing.
+#   - Qubes Windows Tools installed in the target (qrexec working).
+#
+# It streams the repo's post/packages.ps1 into the qube over qubes.VMShell
+# (base64, byte-faithful, hash-verified - no dom0 Filecopy rule needed) and runs
+# it with the package list.
+# ============================================================
+- name: "<playbook>: Install Chocolatey packages on a networked Windows qube"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # ---- Target + packages ----
+    win_qube_name: "win10-romhacking"
+    # Chocolatey package IDs (chocolatey itself is the installer, added by packages.ps1).
+    win_choco_packages: ["firefox", "7zip", "notepadplusplus", "vlc", "git", "microsoft-windows-terminal", "jq"]
+
+    # ---- Where packages.ps1 lives (the airgapped helper holds the repo) ----
+    resources_qube: "windows-mgmt"
+    resources_dir: "/home/user/qvm-create-windows-qube"
+
+    net_wait_retries: 30      # * 6s = 3 min to wait for the qube's internet
+
+    # ---- Force-install uBlock Origin into Firefox (Mozilla enterprise policy) ----
+    # Only applied when 'firefox' is in win_choco_packages AND firefox.exe is found.
+    # Firefox pulls the XPI from AMO on first launch, so the target needs network
+    # (it already does - Chocolatey required it). For an airgapped qube you would
+    # instead pre-stage the .xpi and point install_url at a file:/// path.
+    win_firefox_ublock: true
+    win_firefox_ublock_mode: "force_installed"   # or "normal_installed" to let the user remove it
+    win_firefox_ublock_xpi: "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+    win_firefox_ublock_id: "uBlock0@raymondhill.net"
+    win_firefox_exe: 'C:\Program Files\Mozilla Firefox\firefox.exe'
+    win_firefox_distribution: 'C:\Program Files\Mozilla Firefox\distribution'
+    win_firefox_policies_json: 'C:\Program Files\Mozilla Firefox\distribution\policies.json'
+    # The exact policies.json Firefox reads (mode/url templated from the vars above).
+    win_firefox_policies:
+      policies:
+        ExtensionSettings:
+          "uBlock0@raymondhill.net":
+            installation_mode: "{{ win_firefox_ublock_mode }}"
+            install_url: "{{ win_firefox_ublock_xpi }}"
+
+  tasks:
+    # ----------------------------
+    # Preflight
+    # ----------------------------
+    - name: "[shell - qvm-check]: {{ win_qube_name }} exists and is visible to mgmtvm"
+      ansible.builtin.command:
+        argv: ["qvm-check", "{{ win_qube_name }}"]
+      register: choco_qube_exists
+      changed_when: false
+      failed_when: false
+
+    - name: "[fail - when]: Qube not visible - tag it in dom0"
+      ansible.builtin.fail:
+        msg: >-
+          mgmtvm cannot see '{{ win_qube_name }}'. Its Admin API view is scoped to
+          @tag:created-by-mgmtvm. If you cloned/renamed it in dom0, tag it there:
+            qvm-tags {{ win_qube_name }} add created-by-mgmtvm
+      when: choco_qube_exists.rc != 0
+
+    - name: "[shell - qvm-prefs]: Read {{ win_qube_name }} netvm"
+      ansible.builtin.command:
+        argv: ["qvm-prefs", "{{ win_qube_name }}", "netvm"]
+      register: choco_netvm
+      changed_when: false
+
+    - name: "[fail - when]: Refuse to run on an airgapped qube (Chocolatey needs the internet)"
+      ansible.builtin.fail:
+        msg: >-
+          '{{ win_qube_name }}' has no netvm, so it has no internet and Chocolatey
+          cannot download packages. Give it a netvm first (e.g.
+          'qvm-prefs {{ win_qube_name }} netvm sys-firewall' while halted), or run
+          this against a networked Windows qube.
+      when: choco_netvm.stdout | trim == ''
+
+    # ----------------------------
+    # Ensure running + online
+    # ----------------------------
+    - name: "[qubesos.core.qube - running]: Ensure {{ win_qube_name }} is running"
+      qubesos.core.qube:
+        name: "{{ win_qube_name }}"
+        state: running
+
+    - name: "[shell - qvm-features loop]: Wait for QWT/qrexec (os == Windows)"
+      ansible.builtin.shell:
+        cmd: |
+          until [ "$(qvm-features {{ win_qube_name }} os 2>/dev/null || true)" = "Windows" ]; do
+            [ $SECONDS -ge 600 ] && { echo 'TIMEOUT: QWT not ready'; exit 3; }
+            sleep 5
+          done
+          echo READY
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "[shell - qvm-run]: Wait for the qube to reach the internet"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ win_qube_name }}"
+          - >-
+            powershell -NoProfile -Command "try {(Invoke-WebRequest -UseBasicParsing
+            -Uri 'https://community.chocolatey.org/install.ps1' -TimeoutSec 20).StatusCode}
+            catch {exit 1}"
+      register: choco_net
+      retries: "{{ net_wait_retries | int }}"
+      delay: 6
+      until: choco_net.rc == 0
+      changed_when: false
+
+    # ----------------------------
+    # Deliver packages.ps1 + run
+    # ----------------------------
+    - name: "[shell - qvm-run]: Create C:\\post in {{ win_qube_name }}"
+      ansible.builtin.command:
+        argv: ["qvm-run", "-p", "{{ win_qube_name }}", "cmd /c if not exist C:\\post mkdir C:\\post"]
+      changed_when: false
+
+    - name: "[shell - qvm-run base64]: Pull packages.ps1 from {{ resources_qube }} as base64"
+      ansible.builtin.command:
+        argv: ["qvm-run", "-p", "{{ resources_qube }}", "base64 -w0 '{{ resources_dir }}/post/packages.ps1'"]
+      register: pkg_b64
+      changed_when: false
+
+    - name: "[shell - qvm-run powershell]: Decode packages.ps1 into C:\\post (byte-faithful)"
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          printf '%s' '{{ pkg_b64.stdout | trim }}'
+          | qvm-run --pass-io {{ win_qube_name }}
+          "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes('C:\\post\\packages.ps1',
+          [Convert]::FromBase64String([Console]::In.ReadToEnd()))\""
+        executable: /bin/bash
+      changed_when: true
+
+    - name: "[shell - qvm-run sha256sum]: Source hash of packages.ps1"
+      ansible.builtin.command:
+        argv: ["qvm-run", "-p", "{{ resources_qube }}", "sha256sum '{{ resources_dir }}/post/packages.ps1'"]
+      register: pkg_src_hash
+      changed_when: false
+
+    - name: "[shell - qvm-run Get-FileHash]: Delivered hash of C:\\post\\packages.ps1"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ win_qube_name }}"
+          - "powershell -NoProfile -Command \"(Get-FileHash -Algorithm SHA256 'C:\\post\\packages.ps1').Hash\""
+      register: pkg_dst_hash
+      changed_when: false
+
+    - name: "[assert]: packages.ps1 delivered intact (parse the 64-hex out of the cmd banner)"
+      ansible.builtin.assert:
+        that:
+          - (pkg_src_hash.stdout | regex_search('[a-fA-F0-9]{64}') | default('', true) | lower)
+            == (pkg_dst_hash.stdout | regex_search('[a-fA-F0-9]{64}') | default('', true) | lower)
+        fail_msg: "packages.ps1 hash mismatch - delivery corrupt, not running it."
+
+    - name: "[shell - qvm-run]: Run Chocolatey install of {{ win_choco_packages | join(', ') }} (can take a while)"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ win_qube_name }}"
+          - >-
+            powershell -ExecutionPolicy Bypass -File C:\post\packages.ps1
+            {{ win_choco_packages | join(' ') }}
+      register: choco_run
+      changed_when: true
+
+    - name: "[debug]: Chocolatey output (tail)"
+      ansible.builtin.debug:
+        msg: "{{ (choco_run.stdout_lines | default([]))[-25:] }}"
+
+    # ----------------------------
+    # Optional: bake uBlock Origin into Firefox via the enterprise policy
+    # ----------------------------
+    - name: "[block - when]: Force-install uBlock Origin into Firefox (ExtensionSettings policy)"
+      when:
+        - win_firefox_ublock | bool
+        - "'firefox' in win_choco_packages"
+      block:
+        - name: "[shell - qvm-run]: Confirm Firefox actually installed"
+          ansible.builtin.command:
+            argv: ["qvm-run", "-p", "{{ win_qube_name }}", "cmd /c if exist \"{{ win_firefox_exe }}\" (echo FOUND) else (echo MISSING)"]
+          register: ff_present
+          changed_when: false
+
+        - name: "[shell - qvm-run]: Create the Firefox distribution policy dir"
+          ansible.builtin.command:
+            argv: ["qvm-run", "-p", "{{ win_qube_name }}", "cmd /c if not exist \"{{ win_firefox_distribution }}\" mkdir \"{{ win_firefox_distribution }}\""]
+          changed_when: true
+          when: "'FOUND' in ff_present.stdout"
+
+        - name: "[shell - qvm-run powershell]: Write distribution\\policies.json (force-install uBlock Origin)"
+          ansible.builtin.shell:
+            # b64encode the policy JSON on the controller, decode byte-faithfully in
+            # the qube - same delivery method as packages.ps1, no dom0 Filecopy rule.
+            cmd: >-
+              set -o pipefail;
+              printf '%s' '{{ win_firefox_policies | to_json | b64encode }}'
+              | qvm-run --pass-io {{ win_qube_name }}
+              "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes('{{ win_firefox_policies_json }}',
+              [Convert]::FromBase64String([Console]::In.ReadToEnd()))\""
+            executable: /bin/bash
+          changed_when: true
+          when: "'FOUND' in ff_present.stdout"
+
+        - name: "[debug]: uBlock Origin policy status"
+          ansible.builtin.debug:
+            msg: >-
+              {{ ('Wrote ' ~ win_firefox_policies_json ~ ' - Firefox will ' ~ win_firefox_ublock_mode
+                  ~ ' uBlock Origin (' ~ win_firefox_ublock_id ~ ') from AMO on next launch (needs network the first time).')
+                 if ('FOUND' in ff_present.stdout)
+                 else ('Firefox not found at ' ~ win_firefox_exe ~ ' - skipped the uBlock policy.') }}
+
+    - name: "[shell - qvm-run]: Clean up C:\\post"
+      ansible.builtin.command:
+        argv: ["qvm-run", "-p", "{{ win_qube_name }}", "cmd /c rmdir /s /q C:\\post"]
+      changed_when: true
+      failed_when: false

@@ -1,0 +1,20 @@
+- name: "[qubesos - shutdown] Boot {{ inventory_hostname }}"
+  qubesos:
+    guest: "{{ inventory_hostname }}"
+    state: running
+    wait: true
+  delegate_to: localhost
+
+- name: "[qubesos - shutdown] Rebooting {{ inventory_hostname }}"
+  qubesos:
+    guest: "{{ inventory_hostname }}"
+    state: restarted
+    wait: true
+  delegate_to: localhost
+
+- name: "[qubesos - shutdown] Shutdown {{ inventory_hostname }}"
+  qubesos:
+    guest: "{{ inventory_hostname }}"
+    state: shutdown
+    wait: true
+  delegate_to: localhost

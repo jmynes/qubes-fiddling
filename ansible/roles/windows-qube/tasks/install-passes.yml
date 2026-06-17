@@ -1,0 +1,234 @@
+###############################################
+#  Windows installation boot passes (1 to 4)  #
+###############################################
+# Port of the qvm-create-windows-qube boot loop to mgmtvm/Admin API.
+# 'qvm-start --cdrom VM:/path/file.iso' is dom0-only (qubesadmin refuses the
+# path form outside dom0), so each CD-ROM boot instead does:
+#   1. losetup the ISO inside windows-mgmt (the backend qube)
+#   2. qvm-start --cdrom windows-mgmt:loopN  (port-id form: assign,start,unassign)
+#   3. detach the loop device once the pass is over
+# Pass completion is a guest-initiated reboot, which Qubes reports as a
+# shutdown; with the new QWT (4.2.2, no reboot after install) completion is
+# instead signaled by qubesd setting the feature os=Windows.
+
+- name: "[qubesos.core.qube - running]: Ensure {{ resources_qube }} serves the install media"
+  qubesos.core.qube:
+    name: "{{ resources_qube }}"
+    state: running
+
+# Reset any dirty half-installed state so the boot passes start from halted.
+- name: "[qubesos.core.qube - halted]: Ensure {{ win_qube_name }} is halted before pass 1"
+  qubesos.core.qube:
+    name: "{{ win_qube_name }}"
+    state: shutdown
+    force: true
+
+# Backstop: never boot the qube with a NIC. main.yml clears netvm at creation,
+# but assert it here too, right before the first start.
+- name: "[shell - qvm-prefs]: Read netvm before booting"
+  ansible.builtin.command:
+    argv: ["qvm-prefs", "{{ win_qube_name }}", "netvm"]
+  register: win_preboot_netvm
+  changed_when: false
+
+- name: "[assert]: {{ win_qube_name }} has no netvm before the first boot (airgap)"
+  ansible.builtin.assert:
+    that: win_preboot_netvm.stdout | trim == ''
+    fail_msg: "Refusing to boot: {{ win_qube_name }} has netvm='{{ win_preboot_netvm.stdout | trim }}' (must be airgapped)."
+
+###############################################
+#       Boot pass 1: windowsPE (installer)    #
+###############################################
+# cirrus only for installer graphics, exactly like upstream; removed before pass 2.
+- name: "[qubesos.core.qube - features]: Set video-model cirrus for the installer boot"
+  qubesos.core.qube:
+    name: "{{ win_qube_name }}"
+    state: present
+    features:
+      video-model: "cirrus"
+
+# block/always: whatever happens during attach/start/wait, the loop device is
+# detached. The qube halts (install reboot) before the always runs, so detach
+# succeeds.
+- name: "[block]: Boot pass 1 with the installation media attached"
+  block:
+    - name: "[shell - qvm-run losetup]: Attach the installation media as a loop device in {{ resources_qube }}"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ resources_qube }}"
+          - >-
+            f='{{ resources_dir }}/windows/out/{{ win_iso_filename }}';
+            ex=$(sudo losetup -j "$f" | cut -d: -f1 | head -n1);
+            if [ -n "$ex" ]; then echo "$ex"; else sudo losetup -f --show -r "$f"; fi
+      register: pass1_loop
+      changed_when: false
+
+    - name: "[shell - qvm-start --cdrom]: Boot pass 1 - unattended Windows installation"
+      ansible.builtin.command:
+        argv:
+          - qvm-start
+          - --cdrom
+          - "{{ resources_qube }}:{{ pass1_loop.stdout_lines | last | trim | basename }}"
+          - "{{ win_qube_name }}"
+      register: pass1_start
+      changed_when: true
+      retries: 18
+      delay: 10
+      until: pass1_start.rc == 0
+
+    - name: "[shell - qvm-check loop]: Wait for pass 1 to finish (setup wipes disk, applies image, reboots)"
+      ansible.builtin.shell:
+        cmd: |
+          until qvm-check --quiet --running {{ win_qube_name }}; do
+            [ $SECONDS -ge {{ win_boot_register_timeout_secs }} ] && { echo 'TIMEOUT: qube never registered as running'; exit 3; }
+            sleep 2
+          done
+          start=$SECONDS
+          while qvm-check --quiet --running {{ win_qube_name }}; do
+            [ "$(qvm-features {{ win_qube_name }} os 2>/dev/null || true)" = "Windows" ] && { echo QWT_READY; exit 0; }
+            [ $((SECONDS-start)) -ge {{ win_install_timeout_secs }} ] && { echo 'TIMEOUT: pass 1 did not finish'; exit 3; }
+            sleep 5
+          done
+          echo SHUTDOWN
+        executable: /bin/bash
+      register: pass1_wait
+      changed_when: false
+  always:
+    - name: "[shell - qvm-run losetup -d]: Detach the installation media loop device"
+      ansible.builtin.command:
+        argv:
+          - qvm-run
+          - -p
+          - "{{ resources_qube }}"
+          - >-
+            f='{{ resources_dir }}/windows/out/{{ win_iso_filename }}';
+            ex=$(sudo losetup -j "$f" | cut -d: -f1 | head -n1);
+            [ -n "$ex" ] && sudo losetup -d "$ex" || true
+      changed_when: false
+      failed_when: false
+
+###############################################
+#         Boot pass 2: specialize pass        #
+###############################################
+- name: "[qubesos.core.qube - features]: Unset video-model before the specialize boot"
+  qubesos.core.qube:
+    name: "{{ win_qube_name }}"
+    state: present
+    features:
+      video-model:
+
+- name: "[shell - qvm-start]: Boot pass 2 - specialize (testsigning, ComputerName), ends in a reboot"
+  ansible.builtin.command:
+    argv: ["qvm-start", "{{ win_qube_name }}"]
+  register: pass2_start
+  changed_when: true
+  retries: 18
+  delay: 10
+  until: pass2_start.rc == 0
+
+- name: "[shell - qvm-check loop]: Wait for pass 2 to finish"
+  ansible.builtin.shell:
+    cmd: |
+      until qvm-check --quiet --running {{ win_qube_name }}; do
+        [ $SECONDS -ge {{ win_boot_register_timeout_secs }} ] && { echo 'TIMEOUT: qube never registered as running'; exit 3; }
+        sleep 2
+      done
+      start=$SECONDS
+      while qvm-check --quiet --running {{ win_qube_name }}; do
+        [ "$(qvm-features {{ win_qube_name }} os 2>/dev/null || true)" = "Windows" ] && { echo QWT_READY; exit 0; }
+        [ $((SECONDS-start)) -ge {{ win_install_timeout_secs }} ] && { echo 'TIMEOUT: pass 2 did not finish'; exit 3; }
+        sleep 5
+      done
+      echo SHUTDOWN
+    executable: /bin/bash
+  register: pass2_wait
+  changed_when: false
+
+###############################################
+#     Boot pass 3: OOBE + QWT installation    #
+###############################################
+- name: "[shell - qvm-run losetup]: Attach auto-qwt.iso as a loop device in {{ resources_qube }}"
+  ansible.builtin.command:
+    argv:
+      - qvm-run
+      - -p
+      - "{{ resources_qube }}"
+      - >-
+        f='{{ resources_dir }}/tools/auto-qwt.iso';
+        ex=$(sudo losetup -j "$f" | cut -d: -f1 | head -n1);
+        if [ -n "$ex" ]; then echo "$ex"; else sudo losetup -f --show -r "$f"; fi
+  register: pass3_loop
+  changed_when: false
+
+- name: "[shell - qvm-start --cdrom]: Boot pass 3 - OOBE autologon runs D:\\run.bat which installs QWT"
+  ansible.builtin.command:
+    argv:
+      - qvm-start
+      - --cdrom
+      - "{{ resources_qube }}:{{ pass3_loop.stdout_lines | last | trim | basename }}"
+      - "{{ win_qube_name }}"
+  register: pass3_start
+  changed_when: true
+  retries: 18
+  delay: 10
+  until: pass3_start.rc == 0
+
+- name: "[shell - qvm-check loop]: Wait for pass 3 (new QWT sets os=Windows without rebooting; old QWT reboots)"
+  ansible.builtin.shell:
+    cmd: |
+      until qvm-check --quiet --running {{ win_qube_name }}; do
+        [ $SECONDS -ge {{ win_boot_register_timeout_secs }} ] && { echo 'TIMEOUT: qube never registered as running'; exit 3; }
+        sleep 2
+      done
+      start=$SECONDS
+      while qvm-check --quiet --running {{ win_qube_name }}; do
+        [ "$(qvm-features {{ win_qube_name }} os 2>/dev/null || true)" = "Windows" ] && { echo QWT_READY; exit 0; }
+        [ $((SECONDS-start)) -ge {{ win_install_timeout_secs }} ] && { echo 'TIMEOUT: pass 3 did not finish'; exit 3; }
+        sleep 5
+      done
+      echo SHUTDOWN
+    executable: /bin/bash
+  register: pass3_wait
+  changed_when: false
+
+###############################################
+#   Boot pass 4 (old-QWT path): final boot    #
+###############################################
+- name: "[shell - qvm-start]: Boot pass 4 - completing setup (only when QWT did not register during pass 3)"
+  ansible.builtin.command:
+    argv: ["qvm-start", "{{ win_qube_name }}"]
+  register: pass4_start
+  changed_when: true
+  retries: 18
+  delay: 10
+  until: pass4_start.rc == 0
+  when: "'QWT_READY' not in pass3_wait.stdout"
+
+- name: "[shell - qvm-features loop]: Wait until QWT registers (feature os == Windows)"
+  ansible.builtin.shell:
+    cmd: |
+      until [ "$(qvm-features {{ win_qube_name }} os 2>/dev/null || true)" = "Windows" ]; do
+        [ $SECONDS -ge {{ win_qwt_ready_timeout_secs }} ] && { echo 'TIMEOUT: QWT never registered'; exit 3; }
+        sleep 5
+      done
+      echo QWT_READY
+    executable: /bin/bash
+  changed_when: false
+  when: "'QWT_READY' not in pass3_wait.stdout"
+
+# Best-effort detach. In the new-QWT path the qube is still running here, so the
+# device may be busy; post-setup.yml detaches it for sure after the final shutdown.
+- name: "[shell - qvm-run losetup -d]: Detach the auto-qwt loop device (best-effort)"
+  ansible.builtin.command:
+    argv:
+      - qvm-run
+      - -p
+      - "{{ resources_qube }}"
+      - >-
+        f='{{ resources_dir }}/tools/auto-qwt.iso';
+        ex=$(sudo losetup -j "$f" | cut -d: -f1 | head -n1);
+        [ -n "$ex" ] && sudo losetup -d "$ex" || true
+  changed_when: false
+  failed_when: false

@@ -1,0 +1,75 @@
+# Defaults for the windows-qube role.
+# Shared resources_* / win_iso / answer-file vars must match the
+# windows-mgmt-setup role; override both in the playbook.
+
+# ----------------------------
+# The Windows qube to produce
+# ----------------------------
+win_qube_name: "win10-airgapped"
+# StandaloneVM for a self-contained qube; TemplateVM to base AppVMs on it later.
+win_qube_klass: "StandaloneVM"
+# Inventory convention: [windows:vars] label=blue
+win_qube_label: "blue"
+win_memory_mb: 12288         # initial RAM; maxmem 0 keeps balancing OFF
+win_vcpus: 2
+win_root_size_gib: 60
+win_private_size_gib: 20
+# Upstream uses 999999: first boots can run chkdsk etc. for a very long time.
+win_qrexec_timeout: 999999
+# The 40-windows-airgapped.policy deny rules match on this tag.
+win_tags: ["airgapped-windows"]
+
+# ----------------------------
+# Display / resolution
+# ----------------------------
+# Two parts, both safe (no live mode switch):
+#   1. gui-videoram-min (main.yml) = w*h*4/1024 KiB sizes the GUI framebuffer so
+#      the mode is selectable without running out of video RAM; fullscreen on.
+#   2. post-setup writes QWT's registry FullscreenWidth/Height so the qube BOOTS
+#      at this size (QWT reads them on startup; this persists across reboots).
+# The QWT video driver must actually offer the mode. 2048x1152 IS a preset in
+# this qube's driver; if a given QWT build lacks the mode, Windows snaps to the
+# nearest supported one. Set "" or "0x0" to leave Qubes/QWT defaults.
+#
+# The playbook NEVER does a live resolution change (only registry + videoram):
+# changing modes repeatedly or too quickly can lock up the QWT driver until the
+# qube is rebooted.
+win_max_resolution: "2048x1152"
+
+# ----------------------------
+# Installation behavior
+# ----------------------------
+# Per pass: how long to wait for Windows setup to finish (it ends in a guest
+# reboot, which Qubes reports as a shutdown) before giving up.
+win_install_timeout_secs: 10800
+# How long to wait for the qube to register as running after qvm-start.
+win_boot_register_timeout_secs: 300
+# How long to wait for QWT to advertise itself (feature os == Windows).
+win_qwt_ready_timeout_secs: 1800
+# DANGER: re-runs the installation passes even on a provisioned qube,
+# which wipes it (the answer file repartitions disk 0).
+win_force_reinstall: false
+
+# ----------------------------
+# Post-install scripts (run inside Windows, best-effort like upstream)
+# ----------------------------
+# optimize.bat ALSO disables Windows Defender + SmartScreen and runs
+# `netsh advfirewall ... allowinbound,allowoutbound` (opens the Windows host
+# firewall). Upstream justifies that with "the netVM acts as its firewall" -
+# but this qube has NO netVM, so that rationale is void and it is pure
+# defense-in-depth loss. Default OFF for the hardened profile; opt in only if
+# you understand the tradeoff (and never for a Windows TemplateVM whose AppVMs
+# would inherit a disabled AV/firewall).
+win_run_optimize: false
+win_run_spyless: true    # spyless.bat: disable CEIP/WER/DiagTrack telemetry (purely good for airgap)
+win_run_seamless: false  # seamless.bat: experimental QWT GUI driver - keep off for hardened qubes
+
+# ----------------------------
+# Shared with windows-mgmt-setup (keep in sync via playbook vars)
+# ----------------------------
+resources_qube: "windows-mgmt"
+resources_dir: "/home/user/qvm-create-windows-qube"
+win_iso_filename: "win10x64-pro.iso"
+
+# Where qvm-copy-to-vm lands the post scripts inside Windows.
+post_incoming_dir: '%USERPROFILE%\Documents\QubesIncoming\{{ resources_qube }}\post'

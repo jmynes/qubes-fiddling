@@ -1,0 +1,102 @@
+###############################################
+#   Obtain the Windows ISO into mgmtvm        #
+###############################################
+# Runs in the networked mgmtvm (windows-mgmt stays airgapped; the existing role
+# code streams win_iso_src into it over qrexec). Only acts when the ISO is not
+# already present at win_iso_src, so it is idempotent and never re-downloads.
+
+- name: "[stat]: Is the ISO already at win_iso_src?"
+  ansible.builtin.stat:
+    path: "{{ win_iso_src }}"
+  register: fetch_iso_pre
+
+- name: "[file]: Ensure the mgmtvm cache directory exists"
+  ansible.builtin.file:
+    path: "{{ mgmtvm_cache_dir }}"
+    state: directory
+    mode: "0755"
+  when:
+    - not fetch_iso_pre.stat.exists
+    - win_iso_download_method in ['mirror', 'connector']
+
+# ---- mirror: hash-pinned download from a stable mirror (recommended) ----
+- name: "[block - mirror]: Download + verify the hash-pinned ISO"
+  when:
+    - not fetch_iso_pre.stat.exists
+    - win_iso_download_method == 'mirror'
+  block:
+    - name: "[shell - curl]: Download {{ win_iso_filename }} from {{ win_iso_url }} (resumable, several GB)"
+      ansible.builtin.command:
+        # -C - resumes a partial download so a dropped connection doesn't restart 6 GB.
+        # --retry-all-errors + a long delay rides out archive.org's transient 503
+        # throttling (its /download/ front door rate-limits; the storage node is fine).
+        argv:
+          - curl
+          - -fL
+          - -C
+          - "-"
+          - --retry
+          - "6"
+          - --retry-delay
+          - "20"
+          - --retry-all-errors
+          - --connect-timeout
+          - "30"
+          - -o
+          - "{{ win_iso_src }}"
+          - "{{ win_iso_url }}"
+      register: mirror_dl
+      changed_when: true
+
+    - name: "[stat - checksum]: Verify the downloaded ISO sha256 == win_iso_sha256"
+      ansible.builtin.stat:
+        path: "{{ win_iso_src }}"
+        checksum_algorithm: sha256
+      register: mirror_hash
+      failed_when: win_iso_sha256 | length > 0 and mirror_hash.stat.checksum != win_iso_sha256
+
+# ---- connector: live from Microsoft (Sentinel-gated; residential IP only) ----
+- name: "[block - connector]: Fetch the current ISO from Microsoft's connector API"
+  when:
+    - not fetch_iso_pre.stat.exists
+    - win_iso_download_method == 'connector'
+  block:
+    - name: "[shell - curl]: Resolve the 24h ISO URL and download it"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          UA='{{ win_iso_ms_ua }}'; PROFILE='{{ win_iso_ms_profile }}'; ORG='{{ win_iso_ms_org_id }}'
+          PEID='{{ win_iso_ms_product_edition_id }}'; REF='{{ win_iso_ms_ref }}'
+          SESSION="$(cat /proc/sys/kernel/random/uuid)"
+          curl -fsS -o /dev/null -A "$UA" -H 'Accept:' \
+            "https://vlscppe.microsoft.com/tags?org_id=${ORG}&session_id=${SESSION}"
+          SKUID="$(curl -fsS -A "$UA" \
+            "https://www.microsoft.com/software-download-connector/api/getskuinformationbyproductedition?profile=${PROFILE}&ProductEditionId=${PEID}&SKU=undefined&friendlyFileName=undefined&Locale=en-US&sessionID=${SESSION}" \
+            | jq -r '.Skus[]|select(.LocalizedLanguage=="English (United States)").Id')"
+          RESP="$(curl -fsS -A "$UA" --referer "$REF" \
+            "https://www.microsoft.com/software-download-connector/api/GetProductDownloadLinksBySku?profile=${PROFILE}&productEditionId=undefined&SKU=${SKUID}&friendlyFileName=undefined&Locale=en-US&sessionID=${SESSION}")"
+          if printf '%s' "$RESP" | grep -q 'Sentinel marked this request as rejected'; then
+            echo "MS Sentinel rejected this IP (datacenter/VPN). Use a residential IP or win_iso_download_method=mirror." >&2
+            exit 75
+          fi
+          URL="$(printf '%s' "$RESP" | jq -r '.ProductDownloadOptions[].Uri' | grep -i x64 | head -1)"
+          [ -n "$URL" ] || { echo "No x64 ISO URL in connector response" >&2; exit 1; }
+          curl -fL -C - --retry 3 -A "$UA" --referer "$REF" -o '{{ win_iso_src }}' "$URL"
+        executable: /bin/bash
+      register: connector_dl
+      changed_when: true
+
+    - name: "[shell - isoinfo]: Validate it's a bootable ISO (connector build floats; verify shape)"
+      ansible.builtin.command:
+        argv: ["isoinfo", "-d", "-i", "{{ win_iso_src }}"]
+      register: connector_validate
+      changed_when: false
+      failed_when: "'ISO 9660' not in connector_validate.stdout"
+
+    - name: "[shell - checksum]: If win_iso_sha256 is pinned, also verify it"
+      ansible.builtin.stat:
+        path: "{{ win_iso_src }}"
+        checksum_algorithm: sha256
+      register: connector_hash
+      failed_when: win_iso_sha256 | length > 0 and connector_hash.stat.checksum != win_iso_sha256
+      when: win_iso_sha256 | length > 0

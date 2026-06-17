@@ -1,0 +1,65 @@
+# Defaults for the windows-mgmt-setup role.
+# These are shared with the windows-qube role; override them in the playbook
+# (windows10-airgapped-playbook.yml) so both roles stay in sync.
+
+# ----------------------------
+# Resources qube (the airgapped helper that serves install media)
+# ----------------------------
+resources_qube: "windows-mgmt"
+resources_dir: "/home/user/qvm-create-windows-qube"
+resources_qube_template: "fedora-42-xfce"
+resources_private_size_gib: 60
+
+# Local checkout of the qvm-create-windows-qube repo in mgmtvm. It is streamed
+# into the resources qube over qrexec, so windows-mgmt NEVER needs a netvm
+# (unlike the old approach of flipping netvm on to git clone).
+resources_src_checkout: "/home/user/Projects/qvm-create-windows-qube"
+
+# ----------------------------
+# Windows installation ISO
+# ----------------------------
+# How to obtain the ISO if it's not already at win_iso_src:
+#   mirror    - download the official Win10 22H2 x64 ISO from a stable mirror
+#               (archive.org) and verify it against win_iso_sha256. IP-agnostic,
+#               deterministic, hash-pinned. RECOMMENDED. (default)
+#   connector - fetch the *current* ISO straight from Microsoft's
+#               software-download-connector API. Direct from MS, but the final
+#               call is gated by Microsoft's Sentinel anti-bot, which rejects
+#               datacenter/VPN IPs (only residential IPs pass), and the build
+#               floats so it's validated as a bootable ISO, not by a fixed hash.
+#   manual    - do nothing; you must stage the ISO at win_iso_src yourself
+#               (the run fails with instructions if it's missing).
+# mido.sh is intentionally NOT used (its Microsoft endpoints 404; flaky).
+win_iso_download_method: "mirror"
+
+# Default target: official Windows 10 22H2 x64 multi-edition (Pro selectable at
+# install). 22H2 avoids the long 2004->22H2 feature-update slog. The clean MS
+# ISO has no answer file, so create-media.sh injects win_answer_file.
+win_iso_filename: "Win10_22H2_English_x64v1.iso"
+win_iso_src: "{{ mgmtvm_cache_dir }}/{{ win_iso_filename }}"
+# Official SHA-256 of Win10_22H2_English_x64v1.iso (build 19045.2965). Same hash
+# Mido's table and the home-ansible playbook expect. Integrity is guaranteed by
+# THIS hash regardless of download source. "" disables verification (unsafe).
+win_iso_sha256: "a6f470ca6d331eb353b815c043e327a347f594f37ff525f17764738fe812852e"
+# mirror method: where to fetch the hash-pinned ISO from.
+win_iso_url: "https://archive.org/download/win-10-22h2-v1-enus/Win10_22H2_English_x64v1.iso"
+win_answer_file: "win10x64-pro.xml"
+
+# connector method tunables (Microsoft software-download-connector API).
+win_iso_ms_product_edition_id: "2618"        # Win10 22H2 multi-edition consumer
+win_iso_ms_profile: "606624d44113"
+win_iso_ms_org_id: "y6jn8c31"
+win_iso_ms_ref: "https://www.microsoft.com/en-us/software-download/windows10ISO"
+win_iso_ms_ua: "Mozilla/5.0 (X11; Linux x86_64; rv:100.0) Gecko/20100101 Firefox/100.0"
+
+# ----------------------------
+# Qubes Windows Tools (QWT) acquisition
+# ----------------------------
+# Optional pre-downloaded QWT ISO in mgmtvm (e.g. streamed from dom0 after
+# 'sudo qubes-dom0-update qubes-windows-tools'). Leave "" to download the
+# official dom0 rpm from the Qubes repo instead and extract the ISO from it
+# after verifying its signature against the Qubes 4.3 release signing key.
+qwt_iso_src: ""
+qwt_rpm_url: "https://yum.qubes-os.org/r4.3/current/dom0/fc41/rpm/qubes-windows-tools-4.2.2-1.fc41.noarch.rpm"
+qubes_signing_key: "/etc/pki/rpm-gpg/RPM-GPG-KEY-qubes-4.3-primary"
+mgmtvm_cache_dir: "/home/user/.cache/windows-qube"

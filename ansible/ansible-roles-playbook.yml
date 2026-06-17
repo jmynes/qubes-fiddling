@@ -1,9 +1,10 @@
 ##################################################
 ###   create the VM if it does not exist yet   ###
 ##################################################
-- hosts: templatevms,appvms
+#- hosts: templatevms,appvms
+- hosts: testing
   connection: local
   roles:
-    - { role: qube-exists }
+    - role: qube-exists
+    - role: shutdown-test
   gather_facts: no
-

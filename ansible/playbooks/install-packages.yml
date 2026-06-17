@@ -1,0 +1,69 @@
+# NOTE: Currently, Cloning a TemplateVM, or changing Preferences (like label, memory, etc) always returns Changed
+## See issue here about not returning ok: https://github.com/QubesOS/qubes-issues/issues/10191
+
+---
+- name: "<playbook>: This playbook clones the archlinux template to archlinux-closed-source, and creates AppVMs from it"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    base_template: "archlinux"
+    derivative_template: "archlinux-closed-source"
+
+  tasks:
+    # ----------------------------
+    # Pre-Flight tasks
+    # ----------------------------
+    - name: "<mgmtvm - qvm-ls>: Determine list of existing installed qubes"
+      ansible.builtin.command:
+        argv: ["qvm-ls", "--raw-list"]
+      register: qvm_ls
+      changed_when: false
+
+    - name: "<mgmtvm - set_fact existing_vms>: Store list of qubes"
+      ansible.builtin.set_fact:
+        existing_vms: "{{ qvm_ls.stdout_lines }}"
+
+    # ----------------------------
+    # TemplateVMs
+    # ----------------------------
+    - name: "<mgmtvm - qubesos>: Ensure closed-source Arch template exists"
+      qubesos:
+        guest: "{{ derivative_template }}"
+        state: present
+        vmtype: TemplateVM
+        template: "{{ base_template }}"
+        properties:
+          label: black
+
+    # ----------------------------
+    # AppVMs
+    # ----------------------------
+    - name: "<mgmtvm - qubesos>: Ensure spotify AppVM exists"
+      qubesos:
+        guest: "spotify"
+        state: present
+        vmtype: AppVM
+        template: "{{ derivative_template }}"
+        properties:
+          label: green
+
+    - name: "<mgmtvm - qubesos>: Ensure discord AppVM exists with custom resources"
+      qubesos:
+        guest: "discord"
+        state: present
+        vmtype: AppVM
+        template: "{{ derivative_template }}"
+        properties:
+          label: purple
+          memory: 800
+          maxmem: 8000
+          vcpus: 4
+
+    - name: "<mgmtvm - debug>: Summary"
+      ansible.builtin.debug:
+        msg: >
+          Ensured TemplateVM {{ derivative_template }} (clone of {{ base_template }}).
+          Ensured AppVM spotify (label=green, default resources).
+          Ensured AppVM discord (label=purple, memory=800, maxmem=8000, vcpus=4).

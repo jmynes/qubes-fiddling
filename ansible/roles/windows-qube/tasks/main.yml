@@ -1,0 +1,166 @@
+###############################################
+#        Detect prior provisioning state      #
+###############################################
+# Re-running this role on a finished qube must NEVER reach the installation
+# passes again: boot pass 1 boots the unattended installer, which wipes disk 0.
+- name: "[shell - qvm-check]: Does {{ win_qube_name }} already exist?"
+  ansible.builtin.command:
+    argv: ["qvm-check", "{{ win_qube_name }}"]
+  register: win_qube_exists
+  changed_when: false
+  failed_when: false
+
+- name: "[shell - qvm-features]: Read the provision-complete marker"
+  ansible.builtin.shell:
+    cmd: "qvm-features {{ win_qube_name }} provision-complete 2>/dev/null || true"
+  register: win_provision_marker
+  changed_when: false
+  when: win_qube_exists.rc == 0
+
+- name: "[shell - qvm-features]: Read the os feature (set by qubesd once QWT registers)"
+  ansible.builtin.shell:
+    cmd: "qvm-features {{ win_qube_name }} os 2>/dev/null || true"
+  register: win_os_feature
+  changed_when: false
+  when: win_qube_exists.rc == 0
+
+# Two independent signals:
+#   win_installed   = Windows is on disk (os feature == Windows). Set as soon as
+#                     QWT registers, i.e. BEFORE post-setup finishes.
+#   win_provisioned = post-setup fully completed (provision-complete marker).
+# install-passes is DESTRUCTIVE (pass 1 wipes disk), so it must be gated on
+# win_installed, not on the marker - otherwise a re-run after a post-setup
+# failure would re-wipe a working Windows install. post-setup is safe to re-run
+# and is gated on the marker so an interrupted finalize can be resumed.
+- name: "[set_fact]: Decide installed / provisioned state"
+  ansible.builtin.set_fact:
+    win_installed: >-
+      {{ win_qube_exists.rc == 0
+         and (win_os_feature.stdout | default('') | trim == 'Windows') }}
+    win_provisioned: >-
+      {{ win_qube_exists.rc == 0
+         and (win_provision_marker.stdout | default('') | trim == '1') }}
+
+- name: "[set_fact]: Decide which stages to run"
+  ansible.builtin.set_fact:
+    run_install_passes: "{{ (win_force_reinstall | bool) or not (win_installed | bool) }}"
+    run_post_setup: "{{ (win_force_reinstall | bool) or not (win_provisioned | bool) }}"
+
+- name: "[debug]: Provisioning decision"
+  ansible.builtin.debug:
+    msg: >-
+      {{ win_qube_name }}:
+      install passes {{ 'WILL RUN (wipes disk)' if run_install_passes | bool else 'skipped (Windows already installed)' }};
+      post-setup {{ 'WILL RUN' if run_post_setup | bool else 'skipped (already finalized)' }}.
+
+###############################################
+#   Create the Windows qube (airgapped HVM)   #
+###############################################
+# Prefs follow qvm-create-windows-qube: hvm, no kernel, memory balancing OFF
+# (maxmem 0 - ballooning BSODs Windows), huge qrexec_timeout. The qubesos
+# module's create() applies the DEFAULT netvm first, so netvm:"" is listed
+# FIRST in properties to force it off immediately - on a halted qube, before
+# any boot. The qube is therefore never started with a NIC. We never re-attach
+# a netvm: changing netvm on a running Windows HVM has no effect until reboot
+# (qubes-issues #10459/#10574), and the upstream firewall airgap dance is
+# broken on 4.3 (issue #99). install-passes also asserts netvm is empty before
+# the first boot as a backstop.
+- name: "[qubesos.core.qube - present]: Ensure {{ win_qube_name }} exists with airgapped Windows HVM prefs"
+  qubesos.core.qube:
+    name: "{{ win_qube_name }}"
+    state: present
+    klass: "{{ win_qube_klass }}"
+    tags: "{{ win_tags }}"
+    properties:
+      netvm: ""
+      label: "{{ win_qube_label }}"
+      virt_mode: hvm
+      kernel: ""
+      # maxmem 0 (memory balancing OFF) BEFORE memory: with balancing enabled
+      # qubesd rejects memory > maxmem, and a fresh qube's default maxmem may be
+      # lower than win_memory_mb. 0 removes the ceiling first.
+      maxmem: 0
+      memory: "{{ win_memory_mb | int }}"
+      vcpus: "{{ win_vcpus | int }}"
+      qrexec_timeout: "{{ win_qrexec_timeout | int }}"
+    volumes:
+      root:
+        size: "{{ (win_root_size_gib | int) * 1073741824 }}"
+      private:
+        size: "{{ (win_private_size_gib | int) * 1073741824 }}"
+
+###############################################
+#        Display resolution / video RAM        #
+###############################################
+# gui-videoram-min sizes the GUI framebuffer (KiB) so it can hold
+# win_max_resolution; gui-allow-fullscreen lets the qube go fullscreen. These
+# are dom0-side features (Admin API) applied to the tagged qube; the qube picks
+# them up on its next boot (the role shuts it down at the end of post-setup).
+#
+# This raises the Qubes-side ceiling only. The stock QWT Win10 driver still
+# offers just a hardcoded mode list (max 1920x1080), so a non-standard
+# win_max_resolution (e.g. 2048x1152) will NOT display - Windows snaps to the
+# nearest supported mode. See defaults/main.yml and the README.
+- name: "[set_fact]: Parse win_max_resolution into width/height"
+  ansible.builtin.set_fact:
+    win_res_w: "{{ win_max_resolution.split('x')[0] | int }}"
+    win_res_h: "{{ win_max_resolution.split('x')[1] | int }}"
+  when:
+    - win_max_resolution | default('') | length > 0
+    - win_max_resolution != '0x0'
+
+- name: "[qubesos.core.qube - features]: Size GUI video RAM for {{ win_max_resolution }} + allow fullscreen"
+  qubesos.core.qube:
+    name: "{{ win_qube_name }}"
+    state: present
+    features:
+      # w * h * 4 bytes / 1024 = KiB (floor div). 2048x1152 -> 9216 KiB (9 MiB).
+      gui-videoram-min: "{{ (win_res_w | int) * (win_res_h | int) * 4 // 1024 }}"
+      gui-videoram-overhead: "0"
+      gui-allow-fullscreen: "1"
+  when:
+    - win_max_resolution | default('') | length > 0
+    - win_max_resolution != '0x0'
+
+###############################################
+#       Installation passes + post setup      #
+###############################################
+- name: "[include_tasks]: Run the Windows installation boot passes"
+  ansible.builtin.include_tasks: install-passes.yml
+  when: run_install_passes | bool
+
+- name: "[include_tasks]: Run the post-install scripts and finalize"
+  ansible.builtin.include_tasks: post-setup.yml
+  when: run_post_setup | bool
+
+###############################################
+#         Verify the airgap held up           #
+###############################################
+- name: "[shell - qvm-prefs]: Read back netvm"
+  ansible.builtin.command:
+    argv: ["qvm-prefs", "{{ win_qube_name }}", "netvm"]
+  register: win_final_netvm
+  changed_when: false
+
+- name: "[shell - qvm-prefs]: Read back maxmem"
+  ansible.builtin.command:
+    argv: ["qvm-prefs", "{{ win_qube_name }}", "maxmem"]
+  register: win_final_maxmem
+  changed_when: false
+
+- name: "[assert]: The produced qube is airgapped (no netvm) with memory balancing off"
+  ansible.builtin.assert:
+    that:
+      - win_final_netvm.stdout | trim == ''
+      - win_final_maxmem.stdout | trim == '0'
+    fail_msg: "Unexpected final prefs: netvm='{{ win_final_netvm.stdout | trim }}' maxmem='{{ win_final_maxmem.stdout | trim }}'"
+    success_msg: "{{ win_qube_name }}: netvm is empty, maxmem=0"
+
+- name: "[debug]: Summary and optional dom0 follow-ups"
+  ansible.builtin.debug:
+    msg:
+      - "{{ win_qube_name }} ({{ win_qube_klass }}) is provisioned, airgapped (netvm none), tagged {{ win_tags | join(', ') }}."
+      - "Optional, in dom0:"
+      - "  qvm-appmenus --update --force {{ win_qube_name }}   # sync app menus (no Admin API equivalent)"
+      - "Hardening, in dom0 (denies clipboard/file-copy/open-in-vm for the airgapped-windows tag):"
+      - "  sudo cp ~/qubes-fiddling/ansible/policies/40-windows-airgapped.policy /etc/qubes/policy.d/"

@@ -1,0 +1,120 @@
+###############################################
+#   Post-install configuration (inside Win)   #
+###############################################
+# Deliver and run the optional post scripts. Unlike upstream (which uses a
+# temporary dom0 qubes.Filecopy policy + qvm-copy-to-vm into QubesIncoming),
+# this streams each self-contained .bat over qubes.VMShell, base64-encoded so
+# it is byte-faithful and policy-free: mgmtvm -> windows-mgmt and mgmtvm ->
+# Windows VMShell are already allowed by the created-by-mgmtvm tag, so NO new
+# dom0 Filecopy rule is needed. Each script is best-effort (failed_when:false),
+# matching upstream's '|| true'.
+
+- name: "[shell - qvm-check]: Ensure {{ win_qube_name }} is running before post-setup"
+  ansible.builtin.command:
+    argv: ["qvm-check", "--quiet", "--running", "{{ win_qube_name }}"]
+  register: win_running_post
+  changed_when: false
+  failed_when: false
+
+- name: "[shell - qvm-start]: Start {{ win_qube_name }} if it shut down after the install passes"
+  ansible.builtin.command:
+    argv: ["qvm-start", "{{ win_qube_name }}"]
+  register: post_start
+  changed_when: true
+  retries: 18
+  delay: 10
+  until: post_start.rc == 0
+  when: win_running_post.rc != 0
+
+- name: "[shell - qvm-features loop]: Wait until qrexec/QWT is ready (feature os == Windows)"
+  ansible.builtin.shell:
+    cmd: |
+      until [ "$(qvm-features {{ win_qube_name }} os 2>/dev/null || true)" = "Windows" ]; do
+        [ $SECONDS -ge {{ win_qwt_ready_timeout_secs }} ] && { echo 'TIMEOUT: QWT never registered'; exit 3; }
+        sleep 5
+      done
+      echo QWT_READY
+    executable: /bin/bash
+  changed_when: false
+
+- name: "[shell - qvm-run]: Create C:\\post inside {{ win_qube_name }}"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ win_qube_name }}", "cmd /c if not exist C:\\post mkdir C:\\post"]
+  changed_when: false
+
+- name: "[set_fact]: Which post scripts to run (order matters: spyless, optimize, seamless)"
+  ansible.builtin.set_fact:
+    win_post_scripts: >-
+      {{ ([ 'spyless.bat' ] if win_run_spyless | bool else [])
+         + ([ 'optimize.bat' ] if win_run_optimize | bool else [])
+         + ([ 'seamless.bat' ] if win_run_seamless | bool else []) }}
+
+# Ansible does not allow 'loop' on a block, so loop an include_tasks instead.
+- name: "[include_tasks]: Stream and run each post script into Windows"
+  ansible.builtin.include_tasks: post-one-script.yml
+  loop: "{{ win_post_scripts }}"
+  loop_control:
+    loop_var: post_script
+
+- name: "[shell - qvm-run]: Remove C:\\post after running the scripts"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ win_qube_name }}", "cmd /c rmdir /s /q C:\\post"]
+  changed_when: true
+  failed_when: false
+
+###############################################
+#      Persist the default display resolution  #
+###############################################
+# QWT stores the boot/default resolution in two registry DWORDs and reads them
+# on startup. Writing them is SAFE: it is NOT a live ChangeDisplaySettings, so
+# it cannot trigger the QWT driver lockup that repeated/too-fast live resolution
+# changes cause. The qube picks up the new size on its next boot (after the
+# shutdown below). gui-videoram-min (set in main.yml) sizes the framebuffer so
+# this resolution is actually selectable.
+- name: "[shell - qvm-run reg add]: Set QWT default resolution to {{ win_max_resolution }} (registry only)"
+  ansible.builtin.command:
+    argv:
+      - qvm-run
+      - -p
+      - "{{ win_qube_name }}"
+      - >-
+        cmd /c reg add "HKLM\SOFTWARE\Invisible Things Lab\Qubes Tools" /v FullscreenWidth /t REG_DWORD /d {{ win_res_w | int }} /f
+        & reg add "HKLM\SOFTWARE\Invisible Things Lab\Qubes Tools" /v FullscreenHeight /t REG_DWORD /d {{ win_res_h | int }} /f
+  changed_when: true
+  failed_when: false
+  when:
+    - win_max_resolution | default('') | length > 0
+    - win_max_resolution != '0x0'
+
+###############################################
+#     Mark provisioned, then shut down        #
+###############################################
+# provision-complete guards against re-running the destructive install passes.
+- name: "[qubesos.core.qube - features]: Mark {{ win_qube_name }} provision-complete"
+  qubesos.core.qube:
+    name: "{{ win_qube_name }}"
+    state: present
+    features:
+      provision-complete: "1"
+
+- name: "[qubesos.core.qube - shutdown]: Shut down {{ win_qube_name }} (clean, airgapped)"
+  qubesos.core.qube:
+    name: "{{ win_qube_name }}"
+    state: shutdown
+    force: true
+
+# With the qube halted, the install-media and auto-qwt loop devices in
+# windows-mgmt are free; detach any that survived the per-pass best-effort
+# detaches (e.g. auto-qwt held busy while the new QWT path kept the qube up).
+- name: "[shell - qvm-run losetup -d]: Detach any leftover install loop devices in {{ resources_qube }}"
+  ansible.builtin.command:
+    argv:
+      - qvm-run
+      - -p
+      - "{{ resources_qube }}"
+      - >-
+        for f in '{{ resources_dir }}/windows/out/{{ win_iso_filename }}' '{{ resources_dir }}/tools/auto-qwt.iso'; do
+          for d in $(sudo losetup -j "$f" | cut -d: -f1); do sudo losetup -d "$d" || true; done;
+        done
+  changed_when: false
+  failed_when: false

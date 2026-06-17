@@ -1,0 +1,30 @@
+# ============================================================
+# Hardening policy for airgapped Windows qubes.
+#
+# Install in dom0 AFTER provisioning:
+#   sudo cp ~/qubes-fiddling/ansible/policies/40-windows-airgapped.policy /etc/qubes/policy.d/
+#
+# The windows-qube role tags every qube it produces 'airgapped-windows'.
+# A netvm-less qube is NOT a true airgap (shared Xen/dom0, XSAs, and human
+# clipboard/file-copy error - see forum thread 41999), so deny the data paths
+# that a "no network" qube would otherwise still expose. These rules sit at
+# priority 40: above the stock 90 defaults (which are 'ask'), below the
+# 30-ansible.policy provisioning grants (which never touch these services).
+#
+# First match wins. Deny clipboard paste, file copy, and open-in-VM/URL in
+# BOTH directions for the tag. There is intentionally no allow exception:
+# provisioning delivers post scripts over qubes.VMShell (base64 stream), not
+# qubes.Filecopy, so nothing legitimate needs these services for this tag.
+# ============================================================
+
+qubes.ClipboardPaste  *  @tag:airgapped-windows  @anyvm                  deny
+qubes.ClipboardPaste  *  @anyvm                  @tag:airgapped-windows  deny
+
+qubes.Filecopy        *  @tag:airgapped-windows  @anyvm                  deny
+qubes.Filecopy        *  @anyvm                  @tag:airgapped-windows  deny
+
+qubes.OpenInVM        *  @tag:airgapped-windows  @anyvm                  deny
+qubes.OpenInVM        *  @anyvm                  @tag:airgapped-windows  deny
+
+qubes.OpenURL         *  @tag:airgapped-windows  @anyvm                  deny
+qubes.OpenURL         *  @anyvm                  @tag:airgapped-windows  deny
