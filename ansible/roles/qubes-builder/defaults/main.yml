@@ -1,0 +1,49 @@
+# Defaults for the qubes-builder role.
+# This role provisions a TEMPLATE (e.g. fedora-43-qubesbuilder) with everything
+# qubes-builderv2 needs to run with the rootless-Podman executor. The actual
+# builder qube (qubes-builder-lab) is an AppVM on this template, so anything
+# installed here persists for it; the cloned builderv2 + builder.yml + sources
+# live in the AppVM's /home and are NOT managed by this role.
+
+# ----------------------------
+# Builder user (the unprivileged Qubes account that runs ./qb)
+# ----------------------------
+qubes_builder_user: "user"
+
+# Rootless Podman needs a subordinate uid/gid range for this user. 65536 ids
+# starting at 100000 is the podman default; written to /etc/subuid + /etc/subgid.
+qubes_builder_subid_start: 100000
+qubes_builder_subid_count: 65536
+
+# ----------------------------
+# Package set
+# ----------------------------
+# Straight from qubes-builderv2 dependencies-fedora.txt, trimmed to what a LOCAL
+# podman build needs. Excluded on purpose (only used for other targets/publishing):
+#   docker (we use podman), pacman (Arch targets), reprepro (Debian repo publish),
+#   asciidoc, rb_libtorrent-examples (torrent upload). Add them back if you start
+#   publishing or building non-fc targets.
+qubes_builder_packages:
+  - git                      # not in the upstream list, but required to clone builderv2
+  - podman                   # rootless build executor
+  - createrepo_c
+  - devscripts
+  - gpg
+  - m4
+  - mock
+  - openssl
+  - python3-click
+  - python3-docker
+  - python3-jinja2-cli
+  - python3-lxml
+  - python3-packaging
+  - python3-pathspec
+  - python3-podman
+  - python3-pyyaml
+  - rpm
+  - rpm-sign
+  - rsync
+  - sequoia-chameleon-gnupg
+  - sequoia-sq
+  - sequoia-sqv
+  - tree

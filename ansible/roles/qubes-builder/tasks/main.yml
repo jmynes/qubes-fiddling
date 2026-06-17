@@ -1,0 +1,42 @@
+###############################################
+#   Provision a qubes-builderv2 host template  #
+###############################################
+# Target this role at the BUILDER TEMPLATE (fedora-43-qubesbuilder), not the
+# AppVM. After it runs, shut down the template and restart qubes-builder-lab so
+# the AppVM boots with these packages and the rootless-podman id maps present.
+
+- name: "[ansible.builtin.dnf]: Install qubes-builderv2 host dependencies"
+  become: true
+  ansible.builtin.dnf:
+    name: "{{ qubes_builder_packages }}"
+    state: present
+
+# Rootless Podman maps container root onto this subordinate id range. Without an
+# entry for the builder user, the build container fails with a userns/newuidmap
+# error. Idempotent: one "user:start:count" line in each map file.
+- name: "[ansible.builtin.lineinfile]: Ensure subuid/subgid range for rootless podman"
+  become: true
+  ansible.builtin.lineinfile:
+    path: "{{ item }}"
+    regexp: "^{{ qubes_builder_user }}:"
+    line: "{{ qubes_builder_user }}:{{ qubes_builder_subid_start }}:{{ qubes_builder_subid_count }}"
+    create: true
+    mode: "0644"
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+
+# Sanity surface: confirm the executor binary and id maps are actually in place,
+# so a misconfigured template fails HERE instead of three stages into a build.
+- name: "[ansible.builtin.command]: Verify podman is installed"
+  become: true
+  ansible.builtin.command: podman --version
+  changed_when: false
+  register: qubes_builder_podman_version
+
+- name: "[ansible.builtin.debug]: Report podman version and subid maps"
+  ansible.builtin.debug:
+    msg: >-
+      {{ qubes_builder_podman_version.stdout }} ready;
+      rootless id range {{ qubes_builder_subid_start }}+{{ qubes_builder_subid_count }}
+      for user '{{ qubes_builder_user }}'. Restart qubes-builder-lab to pick this up.
