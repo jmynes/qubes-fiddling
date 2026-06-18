@@ -1,0 +1,14 @@
+# Defaults for the windows-redraw-fix role.
+# Installs a guest-side RedrawWindow watcher that clears the stale-VRAM
+# fragments Win10 leaves at >2 vCPUs (DWM/Basic-Display race under SMP). See the
+# role README and memory note win10-mcp-4vcpu-redraw-fix for the full root cause.
+
+# Target WINDOWS qube to install the fix into (must be running; QWT/qrexec up).
+redraw_target_qube: "romhacking-hma-mcp"
+
+# Scheduled task name created in the guest (logon-triggered, interactive session).
+redraw_task_name: "QubesRedrawFix"
+
+# NOTE: tuning knobs (mouse-drag flush rate, outline-drag toggle) live in the C#
+# source files/redraw-hook.cs and the deploy script files/deploy-redraw-fix.sh.
+# Edit those and re-run the role to change behaviour.

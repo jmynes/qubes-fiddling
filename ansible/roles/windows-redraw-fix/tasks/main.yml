@@ -1,0 +1,20 @@
+###############################################
+#   Install the Win10 4-vCPU redraw fix        #
+###############################################
+# Runs from mgmtvm (connection: local) and pushes the fix into the target
+# WINDOWS qube over qrexec via files/deploy-redraw-fix.sh — we drive qvm-run
+# ourselves rather than using an ansible Windows connection, because the qube
+# only exposes qubes.VMShell (cmd/powershell), not WinRM. Idempotent: re-running
+# recompiles redraw-hook.exe and recreates the QubesRedrawFix logon task.
+
+- name: "[ansible.builtin.command]: Deploy redraw-hook + QubesRedrawFix task into {{ redraw_target_qube }}"
+  connection: local
+  ansible.builtin.command:
+    cmd: "{{ role_path }}/files/deploy-redraw-fix.sh {{ redraw_target_qube }}"
+  register: redraw_deploy
+  changed_when: "'INSTALL-OK' in redraw_deploy.stdout"
+  failed_when: "'INSTALL-OK' not in redraw_deploy.stdout"
+
+- name: "[ansible.builtin.debug]: Report deploy result"
+  ansible.builtin.debug:
+    var: redraw_deploy.stdout_lines
