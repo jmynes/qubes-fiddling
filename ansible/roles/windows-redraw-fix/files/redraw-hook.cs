@@ -56,14 +56,16 @@ class RedrawHook {
     return c == "Progman" || c == "WorkerW";   // the desktop's root window classes
   }
 
-  // Only ARMS when the drag begins on the desktop -> never fires during in-app
-  // dragging/scrolling/pane-resizing, so app performance is untouched.
+  // Arms only when a left-drag begins on the desktop, and repaints ONCE on
+  // release -- not during the drag. Repainting mid-drag with RDW_ERASE wiped the
+  // live marquee rectangle every frame (it took ~1s to become visible); the
+  // post-release repaint clears the leftover selection/icon trail just fine.
+  // App drags never arm OnDesktop(), so app performance is untouched.
   static IntPtr MouseCb(int code, IntPtr w, IntPtr l) {
     if (code >= 0) {
       int msg = w.ToInt32();
       if (msg == WM_LBUTTONDOWN) dragDesktop = OnDesktop();
       else if (msg == WM_LBUTTONUP) { if (dragDesktop) pending = true; dragDesktop = false; }
-      else if (msg == WM_MOUSEMOVE && dragDesktop) pending = true;
     }
     return CallNextHookEx(IntPtr.Zero, code, w, l);
   }

@@ -23,11 +23,14 @@ compositing. No hypervisor patch can fix it — the fix has to be guest-side.
   forces one `RedrawWindow` per event — clears window & Start-menu fragments;
 - throttled catch-all on `LOCATIONCHANGE` (~5 Hz) for programmatic window moves;
 - a **desktop-scoped** low-level mouse hook: a left-drag that *starts on the
-  desktop* (cursor's root window is `Progman`/`WorkerW`) flushes a repaint at
-  ~20 Hz during the drag + once on release — clears marquee-select / icon-drag
-  trails. It hit-tests on button-down and **never arms for app windows**, so
-  in-app dragging/scrolling/pane-resizing is untouched (an earlier *un*scoped
-  version fired on every drag and tanked app performance — see history below).
+  desktop* (cursor's root window is `Progman`/`WorkerW`) fires a single repaint
+  **on mouse-up** — clears marquee-select / icon-drag trails. It hit-tests on
+  button-down and **never arms for app windows**, so in-app
+  dragging/scrolling/pane-resizing is untouched (an earlier *un*scoped version
+  fired on every drag and tanked app performance — see history below).
+  Repainting *during* the desktop drag was tried (A/B-tested) but its `RDW_ERASE`
+  wiped the live marquee rectangle each frame, delaying it ~1s before it became
+  visible; clear-on-release won.
 
 The deploy script also switches dragging to **outline mode**
 (`DragFullWindows=0`) so live window drags don't smear.
