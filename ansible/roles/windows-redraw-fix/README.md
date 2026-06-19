@@ -33,7 +33,11 @@ compositing. No hypervisor patch can fix it — the fix has to be guest-side.
   visible; clear-on-release won.
 
 The deploy script also switches dragging to **outline mode**
-(`DragFullWindows=0`) so live window drags don't smear.
+(`DragFullWindows=0`) so live window drags don't smear, and applies a **custom
+visual-effects** profile: window/menu/taskbar **animations and fades off** (under
+SMP they smear and make the Start menu feel sluggish) while **keeping** the
+translucent selection rectangle, icon-label shadows, and Aero Peek. This needs
+an Explorer restart, so the deploy briefly bounces Explorer.
 
 Idle cost is ~0 — it fires **only on discrete window-level events**, never during
 in-app dragging/scrolling/pane-resizing, so it doesn't touch app performance.

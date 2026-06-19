@@ -33,6 +33,22 @@ public class Spi { [DllImport("user32.dll")] public static extern bool SystemPar
 "@
 [Spi]::SystemParametersInfo(0x0025,0,[IntPtr]::Zero,3) | Out-Null   # SPI_SETDRAGFULLWINDOWS off
 Set-ItemProperty 'HKCU:\Control Panel\Desktop' DragFullWindows 0 -ErrorAction SilentlyContinue
+# Visual effects: disable animations/fades -- under SMP they smear and feel
+# sluggish (e.g. Start menu) -- but KEEP translucent selection / icon shadows /
+# aero peek. Custom (VisualFXSetting=3). Needs an explorer restart to apply.
+$adv='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' VisualFXSetting 3 -Type DWord
+Set-ItemProperty 'HKCU:\Control Panel\Desktop' UserPreferencesMask ([byte[]](0x90,0x12,0x03,0x80,0x10,0x00,0x00,0x00)) -Type Binary
+New-Item 'HKCU:\Control Panel\Desktop\WindowMetrics' -Force | Out-Null
+Set-ItemProperty 'HKCU:\Control Panel\Desktop\WindowMetrics' MinAnimate '0'
+Set-ItemProperty $adv TaskbarAnimations  0 -Type DWord -ErrorAction SilentlyContinue
+Set-ItemProperty $adv ListviewAlphaSelect 1 -Type DWord -ErrorAction SilentlyContinue   # keep translucent marquee
+Set-ItemProperty $adv ListviewShadow      1 -Type DWord -ErrorAction SilentlyContinue   # keep icon-label shadows
+New-Item 'HKCU:\Software\Microsoft\Windows\DWM' -Force | Out-Null
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\DWM' EnableAeroPeek 1 -Type DWord -ErrorAction SilentlyContinue
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+if(-not (Get-Process explorer -ErrorAction SilentlyContinue)){ Start-Process explorer }
 # stop any previous instance, recompile
 schtasks /End /TN $task 2>$null | Out-Null
 Get-Process redraw-hook -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
