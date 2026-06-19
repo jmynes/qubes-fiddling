@@ -21,16 +21,27 @@ compositing. No hypervisor patch can fix it — the fix has to be guest-side.
 
 - hooks window **close / minimize / move-resize-end** (`SetWinEventHook`) and
   forces one `RedrawWindow` per event — clears window & Start-menu fragments;
-- runs a **low-level mouse hook** so that during *any* drag (desktop marquee
-  select, dragging icons — these fire no window events) it flushes a repaint at
-  ~25 Hz, plus once on release;
-- switches dragging to **outline mode** (`DragFullWindows=0`) so live window
-  drags don't generate a continuous repaint storm.
+- throttled catch-all on `LOCATIONCHANGE` (~5 Hz) for programmatic window moves.
 
-Idle cost is ~0 (it only works during the discrete actions that create
-fragments). `RedrawWindow` uses `RDW_UPDATENOW` so the repaint is synchronous —
-that flag is load-bearing; orphaned fragments have no active painter, so a merely
-queued invalidation never clears them.
+The deploy script also switches dragging to **outline mode**
+(`DragFullWindows=0`) so live window drags don't smear.
+
+Idle cost is ~0 — it fires **only on discrete window-level events**, never during
+in-app dragging/scrolling/pane-resizing, so it doesn't touch app performance.
+`RedrawWindow` uses `RDW_UPDATENOW` so the repaint is synchronous — that flag is
+load-bearing; orphaned fragments have no active painter, so a merely queued
+invalidation never clears them.
+
+## Outstanding (not yet handled)
+
+- **Desktop marquee-select and icon-drag trails** still aren't cleared — those
+  drags fire no window events, so the window-level hook never sees them.
+- A previous attempt added a global **low-level mouse hook** to catch any drag,
+  but it fired during *in-app* dragging too (HMA scrolling/selecting/pane
+  resizing), forcing 25 Hz full-screen repaints → badly degraded performance and
+  made app panes jump. It was reverted. The correct approach is a mouse hook
+  **scoped to the desktop surface** (only when the drag starts on `Progman` /
+  `WorkerW` / desktop `SysListView32`), so app windows are never touched.
 
 ## Usage
 
