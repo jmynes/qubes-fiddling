@@ -46,6 +46,10 @@ Set-ItemProperty $adv ListviewAlphaSelect 1 -Type DWord -ErrorAction SilentlyCon
 Set-ItemProperty $adv ListviewShadow      1 -Type DWord -ErrorAction SilentlyContinue   # keep icon-label shadows
 New-Item 'HKCU:\Software\Microsoft\Windows\DWM' -Force | Out-Null
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\DWM' EnableAeroPeek 1 -Type DWord -ErrorAction SilentlyContinue
+# Keep "client area animations" ON (separate from the window/menu animations
+# above). This is what browsers read for CSS prefers-reduced-motion -- with it
+# OFF, sites correctly skip cutscenes/intros (e.g. mynes.me). SPI_SETCLIENTAREAANIMATION=0x1043, pvParam=TRUE.
+[Spi]::SystemParametersInfo(0x1043,0,[IntPtr]1,3) | Out-Null
 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 if(-not (Get-Process explorer -ErrorAction SilentlyContinue)){ Start-Process explorer }

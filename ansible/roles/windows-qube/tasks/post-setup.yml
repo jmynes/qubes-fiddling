@@ -87,6 +87,52 @@
     - win_max_resolution != '0x0'
 
 ###############################################
+#   Native (in-guest) GUI agent vs emulated   #
+###############################################
+# Switch from the qemu-stubdom EMULATED framebuffer to the in-guest experimental
+# GUI agent. The emulated path's gui vchan (stubdom <-> dom0 gui-daemon) stalls /
+# drops (`libvchan_is_eof`) under heavy GUI update load, freezing the display for
+# seconds with partial redraws; the in-guest agent is a different, much more
+# robust pipeline. Full-desktop mode only (no seamless -- the WDDM video driver
+# doesn't exist yet). Two steps, with a SAFETY GATE so a failed Gui install can
+# never leave a fresh qube with no display:
+#   1. install the experimental QWT `Gui` feature (default /passive skips it)
+#   2. ONLY if that verifiably succeeded: gui=1 + clear gui-emulated
+- name: "[shell - qvm-run]: Install the experimental QWT GUI agent (Gui feature)"
+  ansible.builtin.shell:
+    cmd: "cat '{{ role_path }}/files/install-gui-agent.ps1' | qvm-run -p {{ win_qube_name }} 'powershell -NoProfile -Command -'"
+  register: win_gui_add
+  changed_when: "'GUI-OK' in (win_gui_add.stdout | default(''))"
+  failed_when: false
+  when: win_native_gui_agent | bool
+
+- name: "[qubesos.core.qube - features]: gui=1 (use the in-guest Qubes graphics agent)"
+  qubesos.core.qube:
+    name: "{{ win_qube_name }}"
+    state: present
+    features:
+      gui: "1"
+  when:
+    - win_native_gui_agent | bool
+    - "'GUI-OK' in (win_gui_add.stdout | default(''))"
+
+- name: "[shell - qvm-features --unset]: Clear gui-emulated so dom0 uses the in-guest agent"
+  ansible.builtin.command:
+    argv: ["qvm-features", "--unset", "{{ win_qube_name }}", "gui-emulated"]
+  changed_when: true
+  failed_when: false
+  when:
+    - win_native_gui_agent | bool
+    - "'GUI-OK' in (win_gui_add.stdout | default(''))"
+
+- name: "[shell - qvm-prefs]: Give the stubdomain headroom (it still runs the device model)"
+  ansible.builtin.command:
+    argv: ["qvm-prefs", "{{ win_qube_name }}", "stubdom_mem", "{{ win_stubdom_mem }}"]
+  changed_when: true
+  failed_when: false
+  when: (win_stubdom_mem | default('') | string | length) > 0
+
+###############################################
 #     Mark provisioned, then shut down        #
 ###############################################
 # provision-complete guards against re-running the destructive install passes.

@@ -65,6 +65,26 @@ win_run_spyless: true    # spyless.bat: disable CEIP/WER/DiagTrack telemetry (pu
 win_run_seamless: false  # seamless.bat: experimental QWT GUI driver - keep off for hardened qubes
 
 # ----------------------------
+# Native in-guest GUI agent (vs qemu-stubdom emulated framebuffer)
+# ----------------------------
+# Install the experimental QWT `Gui` feature, then switch the qube to the
+# in-guest GUI agent (gui=1 + clear gui-emulated). This is FULL-DESKTOP native,
+# NOT seamless (the per-window WDDM video driver doesn't exist yet -- a "TODO" in
+# qubes-gui-agent-windows; distinct from win_run_seamless/seamless.bat which
+# targets that missing seamless path). It's a big stability win under heavy GUI
+# load: the emulated path's gui vchan (stubdom <-> dom0 gui-daemon) drops
+# (`libvchan_is_eof`) -> multi-second freezes + partial redraws; the in-guest
+# agent is a far more robust pipeline. Safety-gated in post-setup: only flips to
+# native if the `Gui` feature verifiably installs, else it stays emulated. The
+# guest stays on "Microsoft Basic Display Adapter" -- expected (user-mode agent,
+# no video driver). Pairs well with the separate windows-redraw-fix role.
+win_native_gui_agent: true
+
+# Stubdomain RAM (MiB) -- it still runs the device model even under the native
+# GUI agent, and the default is tight. "" leaves the Qubes default.
+win_stubdom_mem: 512
+
+# ----------------------------
 # Shared with windows-mgmt-setup (keep in sync via playbook vars)
 # ----------------------------
 resources_qube: "windows-mgmt"
