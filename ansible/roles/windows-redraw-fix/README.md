@@ -21,7 +21,13 @@ compositing. No hypervisor patch can fix it — the fix has to be guest-side.
 
 - hooks window **close / minimize / move-resize-end** (`SetWinEventHook`) and
   forces one `RedrawWindow` per event — clears window & Start-menu fragments;
-- throttled catch-all on `LOCATIONCHANGE` (~5 Hz) for programmatic window moves.
+- throttled catch-all on `LOCATIONCHANGE` (~5 Hz) for programmatic window moves;
+- a **desktop-scoped** low-level mouse hook: a left-drag that *starts on the
+  desktop* (cursor's root window is `Progman`/`WorkerW`) flushes a repaint at
+  ~20 Hz during the drag + once on release — clears marquee-select / icon-drag
+  trails. It hit-tests on button-down and **never arms for app windows**, so
+  in-app dragging/scrolling/pane-resizing is untouched (an earlier *un*scoped
+  version fired on every drag and tanked app performance — see history below).
 
 The deploy script also switches dragging to **outline mode**
 (`DragFullWindows=0`) so live window drags don't smear.
@@ -32,16 +38,15 @@ in-app dragging/scrolling/pane-resizing, so it doesn't touch app performance.
 load-bearing; orphaned fragments have no active painter, so a merely queued
 invalidation never clears them.
 
-## Outstanding (not yet handled)
+## History / notes
 
-- **Desktop marquee-select and icon-drag trails** still aren't cleared — those
-  drags fire no window events, so the window-level hook never sees them.
-- A previous attempt added a global **low-level mouse hook** to catch any drag,
-  but it fired during *in-app* dragging too (HMA scrolling/selecting/pane
-  resizing), forcing 25 Hz full-screen repaints → badly degraded performance and
-  made app panes jump. It was reverted. The correct approach is a mouse hook
-  **scoped to the desktop surface** (only when the drag starts on `Progman` /
-  `WorkerW` / desktop `SysListView32`), so app windows are never touched.
+- An earlier global (unscoped) low-level mouse hook fired on *every* drag,
+  including in-app dragging/scrolling/pane-resizing — forcing 25 Hz full-screen
+  repaints that badly degraded performance and made app panes jump. Replaced by
+  the desktop-scoped version above, which hit-tests the drag origin and only
+  arms on `Progman`/`WorkerW`.
+- If in-app pane dragging still feels off, the next suspect is the
+  `DragFullWindows=0` (outline drag) step in the deploy script — toggle it back.
 
 ## Usage
 
