@@ -49,6 +49,16 @@ Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\DWM' EnableAeroPeek 1 -Type D
 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 if(-not (Get-Process explorer -ErrorAction SilentlyContinue)){ Start-Process explorer }
+# Disable display/standby power-off and the screensaver -- a sensible default
+# for a Windows qube (default was a 10-min monitor timeout). NOTE: this is NOT
+# the cure for the load-triggered full-screen "blackout" seen on this qube --
+# that was diagnosed to the Qubes GUI vchan dropping under heavy update load
+# (guid 'libvchan_is_eof'; dm log clean), a platform issue, not display sleep.
+powercfg /change monitor-timeout-ac 0
+powercfg /change monitor-timeout-dc 0
+powercfg /change standby-timeout-ac 0
+powercfg /change standby-timeout-dc 0
+Set-ItemProperty 'HKCU:\Control Panel\Desktop' ScreenSaveActive 0 -ErrorAction SilentlyContinue
 # stop any previous instance, recompile
 schtasks /End /TN $task 2>$null | Out-Null
 Get-Process redraw-hook -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
