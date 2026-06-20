@@ -87,43 +87,59 @@
     - win_max_resolution != '0x0'
 
 ###############################################
-#   Native (in-guest) GUI agent vs emulated   #
+#  WARP/DWM redraw fix: bcdedit groupsize     #
 ###############################################
-# Switch from the qemu-stubdom EMULATED framebuffer to the in-guest experimental
-# GUI agent. The emulated path's gui vchan (stubdom <-> dom0 gui-daemon) stalls /
-# drops (`libvchan_is_eof`) under heavy GUI update load, freezing the display for
-# seconds with partial redraws; the in-guest agent is a different, much more
-# robust pipeline. Full-desktop mode only (no seamless -- the WDDM video driver
-# doesn't exist yet). Two steps, with a SAFETY GATE so a failed Gui install can
-# never leave a fresh qube with no display:
-#   1. install the experimental QWT `Gui` feature (default /passive skips it)
-#   2. ONLY if that verifiably succeeded: gui=1 + clear gui-emulated
-- name: "[shell - qvm-run]: Install the experimental QWT GUI agent (Gui feature)"
-  ansible.builtin.shell:
-    cmd: "cat '{{ role_path }}/files/install-gui-agent.ps1' | qvm-run -p {{ win_qube_name }} 'powershell -NoProfile -Command -'"
-  register: win_gui_add
-  changed_when: "'GUI-OK' in (win_gui_add.stdout | default(''))"
-  failed_when: false
-  when: win_native_gui_agent | bool
-
-- name: "[qubesos.core.qube - features]: gui=1 (use the in-guest Qubes graphics agent)"
-  qubesos.core.qube:
-    name: "{{ win_qube_name }}"
-    state: present
-    features:
-      gui: "1"
-  when:
-    - win_native_gui_agent | bool
-    - "'GUI-OK' in (win_gui_add.stdout | default(''))"
-
-- name: "[shell - qvm-features --unset]: Clear gui-emulated so dom0 uses the in-guest agent"
+# THE root-cause fix for the >2-vCPU redraw corruption on this GPU-less Win10
+# 22H2 qube. Splits logical processors into 2-CPU PROCESSOR GROUPS so WARP (the
+# software DWM compositor, d3d10warp.dll) enumerates only 2 CPUs (via the legacy
+# per-group GetSystemInfo) and stops racing on static regions. Does NOT disable
+# any core (unlike numproc): all vCPUs stay online; Windows round-robins
+# PROCESSES across groups so a multi-process workload still uses every core.
+# Win10-ONLY (Win11 spans groups -> bug returns). Effective on next boot -- the
+# qube is shut down at the end of this role, so it is live on first user boot.
+# Idempotent: only writes BCD if the current value differs. Best-effort. Largely
+# SUPERSEDES the windows-redraw-fix RedrawWindow-hook role.
+- name: "[shell - qvm-run]: Read current BCD groupsize in {{ win_qube_name }}"
   ansible.builtin.command:
-    argv: ["qvm-features", "--unset", "{{ win_qube_name }}", "gui-emulated"]
-  changed_when: true
+    argv: ["qvm-run", "-p", "{{ win_qube_name }}", "cmd /c bcdedit /enum {current}"]
+  register: win_groupsize_before
+  changed_when: false
   failed_when: false
   when:
-    - win_native_gui_agent | bool
-    - "'GUI-OK' in (win_gui_add.stdout | default(''))"
+    - (win_warp_groupsize | default('') | string | length) > 0
+    - (win_warp_groupsize | string) != '0'
+
+# bcdedit prints "groupsize               2" when set, omits the line when unset.
+- name: "[set_fact]: Parse current groupsize ('' when unset)"
+  ansible.builtin.set_fact:
+    win_groupsize_current: >-
+      {{ (win_groupsize_before.stdout | default('')
+          | regex_search('groupsize\s+(\d+)', '\1') | default([''], true) | first) }}
+  when:
+    - (win_warp_groupsize | default('') | string | length) > 0
+    - (win_warp_groupsize | string) != '0'
+
+- name: "[shell - qvm-run]: Set groupsize {{ win_warp_groupsize }} (WARP/DWM SMP pin; next boot)"
+  ansible.builtin.command:
+    argv: ["qvm-run", "-p", "{{ win_qube_name }}", "cmd /c bcdedit /set groupsize {{ win_warp_groupsize | int }} & echo GROUPSIZE-SET"]
+  register: win_groupsize_set
+  changed_when: "'GROUPSIZE-SET' in (win_groupsize_set.stdout | default(''))"
+  failed_when: false
+  when:
+    - (win_warp_groupsize | default('') | string | length) > 0
+    - (win_warp_groupsize | string) != '0'
+    - (win_groupsize_current | default('')) != (win_warp_groupsize | string)
+
+- name: "[debug]: groupsize result (applies on next boot)"
+  ansible.builtin.debug:
+    msg: >-
+      groupsize was '{{ win_groupsize_current | default('unset') }}', desired
+      '{{ win_warp_groupsize }}' --
+      {{ 'updated' if (win_groupsize_current | default('')) != (win_warp_groupsize | string)
+         else 'already correct' }}
+  when:
+    - (win_warp_groupsize | default('') | string | length) > 0
+    - (win_warp_groupsize | string) != '0'
 
 - name: "[shell - qvm-prefs]: Give the stubdomain headroom (it still runs the device model)"
   ansible.builtin.command:

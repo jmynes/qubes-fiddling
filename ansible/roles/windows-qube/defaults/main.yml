@@ -65,24 +65,51 @@ win_run_spyless: true    # spyless.bat: disable CEIP/WER/DiagTrack telemetry (pu
 win_run_seamless: false  # seamless.bat: experimental QWT GUI driver - keep off for hardened qubes
 
 # ----------------------------
-# Native in-guest GUI agent (vs qemu-stubdom emulated framebuffer)
+# WARP/DWM redraw fix: processor-group size (bcdedit groupsize) -- THE root fix
 # ----------------------------
-# Install the experimental QWT `Gui` feature, then switch the qube to the
-# in-guest GUI agent (gui=1 + clear gui-emulated). This is FULL-DESKTOP native,
-# NOT seamless (the per-window WDDM video driver doesn't exist yet -- a "TODO" in
-# qubes-gui-agent-windows; distinct from win_run_seamless/seamless.bat which
-# targets that missing seamless path). It's a big stability win under heavy GUI
-# load: the emulated path's gui vchan (stubdom <-> dom0 gui-daemon) drops
-# (`libvchan_is_eof`) -> multi-second freezes + partial redraws; the in-guest
-# agent is a far more robust pipeline. Safety-gated in post-setup: only flips to
-# native if the `Gui` feature verifiably installs, else it stays emulated. The
-# guest stays on "Microsoft Basic Display Adapter" -- expected (user-mode agent,
-# no video driver). Pairs well with the separate windows-redraw-fix role.
-win_native_gui_agent: true
+# Fixes this qube's >2-vCPU redraw corruption (black/stale static regions,
+# drag-select staircase trails). GPU-less Win10 22H2 falls back to the Microsoft
+# Basic Display Adapter, so DWM composites the whole desktop in software via WARP
+# (d3d10warp.dll). WARP sizes its compositor thread pool to the ENUMERATED
+# processor count; at 3+ vCPUs it multithread-composites and RACES on static
+# regions -> stale/black pixels. Hard 2-vs-3 cliff (clean <=2, broken 3+).
+#
+# `bcdedit /set groupsize 2` splits the vCPUs into 2-logical-processor PROCESSOR
+# GROUPS without disabling any core (unlike numproc, which parks them). On Win10
+# 22H2 a process defaults to its home group, and the legacy GetSystemInfo (the
+# only processor-count API d3d10warp.dll imports) returns just that group's
+# count, so WARP always sees 2 -> 2-wide pool -> clean. Verified at 16 vCPU:
+# TotalOnline=16 Groups=8 ProcView=2 Packages=1 (all cores online). Applied in
+# post-setup (effective on the NEXT boot). Largely SUPERSEDES the separate
+# windows-redraw-fix RedrawWindow-hook role -- drop that hook from the playbook.
+#
+# CAVEATS: Win10-ONLY -- do NOT upgrade the guest to Win11/Server2022 (they span
+# all groups by default -> WARP re-enumerates every vCPU -> bug returns). Not
+# durable across Windows feature/in-place upgrades (re-assert via this role).
+# Each group is 2 CPUs, so any SINGLE non-group-aware process is capped at 2
+# cores; aggregate multi-PROCESS throughput is unaffected (Windows round-robins
+# new processes across groups). ~20-group cap -> ~40 vCPU ceiling.
+# Set 0 or "" to skip (e.g. if you instead cap win_vcpus <= 2, or run Win11).
+win_warp_groupsize: 2
 
-# Stubdomain RAM (MiB) -- it still runs the device model even under the native
-# GUI agent, and the default is tight. "" leaves the Qubes default.
+# Stubdomain RAM (MiB) -- mitigates the SEPARATE "Issue 1" gui-vchan freeze
+# (libvchan_is_eof: freeze + partial blank + window jumps to the active monitor
+# under heavy GUI load). The default is tight; "" leaves the Qubes default.
+# Distinct from the redraw fix above. The upstream #9847 freeze fix ships in
+# xen-hvm-stubdom-linux >= 4.3.4 (check `rpm -qf` on the stubdom rootfs).
 win_stubdom_mem: 512
+
+# ----------------------------
+# Native in-guest GUI agent -- DISABLED (superseded; kept for documentation)
+# ----------------------------
+# We tried switching to the experimental QWT in-guest GUI agent (gui=1 + clear
+# gui-emulated) to dodge the emulated path. On this setup it did NOT reliably
+# engage (gui-emulated re-stamps on boot; the qube stayed emulated), and the
+# redraw bug it was meant to help is now fixed at the root by win_warp_groupsize.
+# Left OFF. (As a possible Issue-1 fallback only: the Win10 native agent has no
+# display driver -> stuck at a tiny fixed resolution, so it's a poor trade.)
+# Its post-setup tasks (and files/install-gui-agent.ps1) have been removed.
+win_native_gui_agent: false
 
 # ----------------------------
 # Shared with windows-mgmt-setup (keep in sync via playbook vars)
